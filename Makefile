@@ -1,4 +1,9 @@
 
+CC ?=cc
+# CFLAGS +=
+LDLIBS +=-lm -lz
+# LDFLAGS +=
+
 LIBBW := libs/libBigWig
 
 debug: CFLAGS+=-g3 -Og -Wall -Wextra -Wdouble-promotion -Wno-sign-compare \
@@ -11,8 +16,12 @@ libBigWig/libBigWig.a:
 libBigWig: libBigWig/libBigWig.a
 
 src/bwtk.o: src/bwtk.c
-	$(CC) $(CFLAGS) -c $^ -o $@
+	$(CC) $(CFLAGS) -c $^ -o $@ 
+
+clean/bwtk:
+	-rm -f bwtk
+	-rm -f src/*.o
 
 bwtk: src/bwtk.o
-	$(CC) $(CFLAGS) $(LDFLAGS) $(src/bwtk.o) -o $@ $(LIBBW)
+	$(CC) $(CFLAGS) $(LDFLAGS) src/bwtk.o -o $@ $(LIBBW)/libBigWig.a $(LDLIBS)
 
