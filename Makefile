@@ -4,24 +4,36 @@ CC ?=cc
 LDLIBS +=-lm -lz
 # LDFLAGS +=
 
-LIBBW := libs/libBigWig
+ZLIBDIR ?=libs/zlib
+ZLIB :=$(ZLIBDIR)/libz.a
+
+LIBBWDIR ?=libs/libBigWig
+LIBBW :=$(LIBBWDIR)/libBigWig.a
 
 debug: CFLAGS+=-g3 -Og -Wall -Wextra -Wdouble-promotion -Wno-sign-compare \
 	-fsanitize=address,undefined -fno-omit-frame-pointer
 debug: bwtk
 
+libz/libz.a:
+	(cd $(ZLIBDIR) && ./configure --prefix=./ --static)
+	$(MAKE) -C $(ZLIBDIR)
+
+libz: libz/libz.a
+
 libBigWig/libBigWig.a:
-	$(MAKE) -C $(LIBBW) lib-static
+	$(MAKE) -C $(LIBBWDIR) lib-static
 
 libBigWig: libBigWig/libBigWig.a
 
 src/bwtk.o: src/bwtk.c
 	$(CC) $(CFLAGS) -c $^ -o $@ 
 
+objects:=src/bwtk.o
+
 clean/bwtk:
 	-rm -f bwtk
 	-rm -f src/*.o
 
 bwtk: src/bwtk.o
-	$(CC) $(CFLAGS) $(LDFLAGS) src/bwtk.o -o $@ $(LIBBW)/libBigWig.a $(LDLIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(objects) -o $@ $(LIBBW) $(ZLIB) $(LDLIBS)
 
