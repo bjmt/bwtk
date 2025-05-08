@@ -1,7 +1,7 @@
 
 CC ?=cc
 # CFLAGS +=
-LDLIBS +=-lm -lz
+LDLIBS +=-lm # -lz
 # LDFLAGS +=
 
 ZLIBDIR ?=libs/zlib
