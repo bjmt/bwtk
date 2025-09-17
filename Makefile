@@ -14,6 +14,9 @@ debug: CFLAGS+=-g3 -Og -Wall -Wextra -Wdouble-promotion -Wno-sign-compare \
 	-fsanitize=address,undefined -fno-omit-frame-pointer
 debug: bwtk
 
+release: CFLAGS+=-O3
+release: bwtk
+
 libz/libz.a:
 	(cd $(ZLIBDIR) && ./configure --prefix=./ --static)
 	$(MAKE) -C $(ZLIBDIR)
