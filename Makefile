@@ -11,7 +11,7 @@ LIBBWDIR ?=libs/libBigWig
 LIBBW :=$(LIBBWDIR)/libBigWig.a
 
 debug: CFLAGS+=-g3 -Og -Wall -Wextra -Wdouble-promotion -Wno-sign-compare \
-	-fsanitize=address,undefined -fno-omit-frame-pointer
+	-fsanitize=address,undefined -fno-omit-frame-pointer -Wno-unused-function
 debug: bwtk
 
 release: CFLAGS+=-O3
