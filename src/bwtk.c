@@ -173,26 +173,23 @@ static bed_t *readBED(const char *fn, const bool constant_size, const uint32_t s
         bedList_t *p;
 
         if (ks_len == 0)
-            continue; // skip blank lines
+            continue;
 
         line++;
         while (*ref && isspace(*ref)) ref++;
-        if ('\0' == *ref) continue;  // Skip blank lines
-        if ('#'  == *ref) continue;  // Skip BED file comments
-        ref_end = ref;   // look for the end of the reference name
+        if ('\0' == *ref) continue;
+        if ('#'  == *ref) continue;
+        ref_end = ref;
         while (*ref_end && !isspace(*ref_end)) ref_end++;
         if ('\0' != *ref_end) {
-            *ref_end = '\0';  // terminate ref and look for start, end, name, score, strand
+            *ref_end = '\0';
             num = sscanf(ref_end + 1, "%"SCNu32" %"SCNu32" %s %*s %c",
                          &beg, &end, name, &strand);
         }
-        if (1 == num) {  // VCF-style format
-            end = beg--; // Counts from 1 instead of 0 for BED files
+        if (1 == num) {
+            end = beg--;
         }
         if (num < 1 || end < beg) {
-            // These two are special lines that can occur in BED files.
-            // Check for them here instead of earlier in case someone really
-            // has called their reference "browser" or "track".
             if (0 == strcmp(ref, "browser")) continue;
             if (0 == strcmp(ref, "track")) continue;
             if (num < 1) {
@@ -206,13 +203,12 @@ static bed_t *readBED(const char *fn, const bool constant_size, const uint32_t s
                         "than start (%"PRIu32")\n",
                         fn, line, end, beg);
             }
-            errno = 0; // Prevent caller from printing misleading error messages
+            errno = 0;
             goto fail;
         }
         if (num < 4) strand = '.';
-        // Put reg in the hash table if not already there
         k = kh_get(bedHash, h, ref);
-        if (k == kh_end(h)) { // absent from the hash table
+        if (k == kh_end(h)) {
             int ret;
             char *s = strdup(ref);
             if (NULL == s) {
@@ -229,7 +225,6 @@ static bed_t *readBED(const char *fn, const bool constant_size, const uint32_t s
         }
         p = &kh_val(h, k);
 
-        // Add begin,end to the list
         if (p->n == p->m) {
             p->m = p->m ? p->m<<1 : 4;
             bedItem_t *new_a = realloc(p->a, p->m * sizeof(p->a[0]));
