@@ -34,8 +34,13 @@
 
 // common ----------------------------------------------------------------------
 
+typedef struct {
+    int64_t x, y;
+} int64_t2;
+
 KSTREAM_INIT(gzFile, gzread, 8192)
-KHASH_MAP_INIT_STR(str_m, int64_t)
+KHASH_MAP_INIT_STR(str_m, int64_t2)
+KHASH_MAP_INIT_STR(len_m, int32_t)
 
 #include <sys/resource.h>
 static long peak_mem(void) {
@@ -130,7 +135,7 @@ typedef struct {
 #define BED_NAME_SIZE 1024
 #define BED_INIT_ROWS 1024
 
-static bed_t *bed_read(const char *fn, const bool constant_size, const uint32_t size, const bool resize_left, const bool resize_right) {
+static bed_t *readBED(const char *fn, const bool constant_size, const uint32_t size, const bool resize_left, const bool resize_right) {
     bed_t *bed = alloc(sizeof(bed_t));
     bed->m_names = BED_INIT_ROWS;
     bed->names = alloc(sizeof(char *) * bed->m_names);
@@ -142,17 +147,17 @@ static bed_t *bed_read(const char *fn, const bool constant_size, const uint32_t 
     kstring_t str = { 0, 0, NULL };
 
     if (NULL == h) {
-        fprintf(stderr, "[E::bed_read] Out of memory\n");
+        fprintf(stderr, "[E::readBED] Out of memory\n");
         return NULL;
     }
     fp = gzopen(fn, "r");
     if (fp == 0) {
-        fprintf(stderr, "[E::bed_read] Unable to open BED file (-b)\n");
+        fprintf(stderr, "[E::readBED] Unable to open BED file (-b)\n");
         return NULL;
     }
     ks = ks_init(fp);
     if (NULL == ks) {
-        fprintf(stderr, "[E::bed_read] Error opening BED file (-b)\n");
+        fprintf(stderr, "[E::readBED] Error opening BED file (-b)\n");
         goto fail;
     }
     int ks_len;
@@ -192,11 +197,11 @@ static bed_t *bed_read(const char *fn, const bool constant_size, const uint32_t 
             if (0 == strcmp(ref, "track")) continue;
             if (num < 1) {
                 fprintf(stderr,
-                        "[E::bed_read] Parse error reading \"%s\" at line %u\n",
+                        "[E::readBED] Parse error reading \"%s\" at line %u\n",
                         fn, line);
             } else {
                 fprintf(stderr,
-                        "[E::bed_read] Parse error reading \"%s\" at line %u : "
+                        "[E::readBED] Parse error reading \"%s\" at line %u : "
                         "end (%"PRIu32") must not be less "
                         "than start (%"PRIu32")\n",
                         fn, line, end, beg);
@@ -211,13 +216,13 @@ static bed_t *bed_read(const char *fn, const bool constant_size, const uint32_t 
             int ret;
             char *s = strdup(ref);
             if (NULL == s) {
-                fprintf(stderr, "[E::bed_read] Out of memory\n");
+                fprintf(stderr, "[E::readBED] Out of memory\n");
                 goto fail;
             }
             k = kh_put(bedHash, h, s, &ret);
             if (-1 == ret) {
                 free(s);
-                fprintf(stderr, "[E::bed_read] Out of memory\n");
+                fprintf(stderr, "[E::readBED] Out of memory\n");
                 goto fail;
             }
             memset(&kh_val(h, k), 0, sizeof(bedList_t));
@@ -229,7 +234,7 @@ static bed_t *bed_read(const char *fn, const bool constant_size, const uint32_t 
             p->m = p->m ? p->m<<1 : 4;
             bedItem_t *new_a = realloc(p->a, p->m * sizeof(p->a[0]));
             if (NULL == new_a) {
-                fprintf(stderr, "[E::bed_read] Out of memory");
+                fprintf(stderr, "[E::readBED] Out of memory");
                 goto fail;
             }
             p->a = new_a;
@@ -274,7 +279,7 @@ static bed_t *bed_read(const char *fn, const bool constant_size, const uint32_t 
                 prev_size = end - beg;
             } else {
                 if (prev_size != (end - beg)) {
-                    fprintf(stderr, "[E::bed_read] Ranges are not equal size, use -s\n");
+                    fprintf(stderr, "[E::readBED] Ranges are not equal size, use -s\n");
                     goto fail;
                 }
             }
@@ -283,7 +288,7 @@ static bed_t *bed_read(const char *fn, const bool constant_size, const uint32_t 
             int sret = snprintf(name, BED_NAME_SIZE, "%s:%u-%u", ref, beg, end);
             if (sret < 0 || sret > BED_NAME_SIZE) {
                 fprintf(stderr,
-                        "[E::bed_read] Failed to store range name in \"%s\" at line %u\n",
+                        "[E::readBED] Failed to store range name in \"%s\" at line %u\n",
                         fn, line);
                 errno = 0;
                 goto fail;
@@ -293,7 +298,7 @@ static bed_t *bed_read(const char *fn, const bool constant_size, const uint32_t 
             bed->m_names *= 2;
             char **tmp_names = realloc(bed->names, bed->m_names * sizeof(char *));
             if (tmp_names == NULL) {
-                fprintf(stderr, "[E::bed_read] Out of memory\n");
+                fprintf(stderr, "[E::readBED] Out of memory\n");
                 errno = 0;
                 goto fail;
             }
@@ -308,7 +313,7 @@ static bed_t *bed_read(const char *fn, const bool constant_size, const uint32_t 
         bed->n++;
     }
     if (!bed->n) {
-        fprintf(stderr, "[E::bed_read] Found 0 ranges in BED file\n");
+        fprintf(stderr, "[E::readBED] Found 0 ranges in BED file\n");
         goto fail;
     }
     if (size) {
@@ -319,7 +324,7 @@ static bed_t *bed_read(const char *fn, const bool constant_size, const uint32_t 
 
     if (gzclose(fp) != Z_OK) {
         fp = NULL;
-        fprintf(stderr, "[E::bed_read] Error closing BED file (-b)\n");
+        fprintf(stderr, "[E::readBED] Error closing BED file (-b)\n");
         goto fail;
     }
     ks_destroy(ks);
@@ -488,7 +493,7 @@ static int subset(int argc, char **argv) {
         }
     }
     if (bedfn != NULL) {
-        bed = bed_read(bedfn, false, 0, 0, 0);
+        bed = readBED(bedfn, false, 0, 0, 0);
         if (bed == NULL) return EXIT_FAILURE;
         bed_index(bed->data);
         bed->n = bed_unify(bed->data);
@@ -675,8 +680,9 @@ static int adjust(int argc, char **argv) {
                     fprintf(stderr, "[E::adjust] -z must be a positive integer\n");
                     return EXIT_FAILURE;
                 }
+                break;
             case 'h':
-                help_subset();
+                help_adjust();
                 return EXIT_SUCCESS;
             default:
                 return EXIT_FAILURE;
@@ -849,7 +855,7 @@ static int values(int argc, char **argv) {
         // original order! So might as well index. For consistency, when
         // printing the results, use the order of chromosomes listed in the
         // bigWig.
-        bed = bed_read(bedfn, true, (uint32_t) size, left, right);
+        bed = readBED(bedfn, true, (uint32_t) size, left, right);
         if (bed == NULL) return EXIT_FAILURE;
         bed_index(bed->data);
     } else {
@@ -1384,7 +1390,8 @@ static int bg2bw(int argc, char **argv) {
             fprintf(stderr, "[E::bg2bw] Failed to create bgChroms hash table\n");
             return EXIT_FAILURE;
         }
-        kh_val(bgChroms, k) = -1;
+        kh_val(bgChroms, k).x = -1;
+        kh_val(bgChroms, k).y = (int64_t) chromSizes->sizes[i];
     }
 
     kstream_t *ks_bg = ks_init(bg);
@@ -1417,16 +1424,21 @@ static int bg2bw(int argc, char **argv) {
             fprintf(stderr, "[E::bg2bw] Found unknown chrom '%s' on line %lld\n", chr, frow);
             return EXIT_FAILURE;
         }
-        if (kh_val(bgChroms, k) != -1 && kh_val(bgChroms, k) < (erow - 1)) {
+        if (kh_val(bgChroms, k).x != -1 && kh_val(bgChroms, k).x < (erow - 1)) {
             fprintf(stderr, "[E::bg2bw] bedGraph file must be sorted (found out of order chroms)\n");
             return EXIT_FAILURE;
         }
-        kh_val(bgChroms, k) = erow;
+        kh_val(bgChroms, k).x = erow;
         if (end <= start || start < 0) {
             fprintf(stderr, "[E::bg2bw] Bad bedGraph range on line %lld (start=%u end=%u)\n", frow, start, end);
             return EXIT_FAILURE;
         }
-        // TODO: Make sure end doesn't go beyond chrom limit, libBigWig does no input checks
+        if (end > kh_val(bgChroms, k).y) {
+            fprintf(stderr, "[E::bg2bw] bedGraph range extends beyond chromosome limit on line %lld\n", frow);
+            fprintf(stderr, "[E::bg2bw] Range: %s:%u-%u\n", chr, start, end);
+            fprintf(stderr, "[E::bg2bw] Chromosome size: %lld\n", kh_val(bgChroms, k).y);
+            return EXIT_FAILURE;
+        }
         if (chrom_last == NULL || strcmp(chrom_last, chr) == 0) {
             if (ranges->n == ranges->m) {
                 addBwInterval(bw, ranges);
