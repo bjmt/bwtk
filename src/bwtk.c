@@ -605,11 +605,13 @@ static void help_adjust(void) {
         "bwtk adjust [options] -i <in.bw> -o <out.bw>\n"
         "    -i    Input bigWig\n"
         "    -o    Output bigWig\n"
-        "    -m    Multiply scores by this value [1]\n"
-        "    -a    Add this value to scores [0]\n"
+        "    -a    Add this value to scores\n"
+        "    -m    Multiply scores by this value\n"
         "    -l    log10-transform scores\n"
+        "    -t    Trim values above this max\n"
         "    -z    Number of zoom levels in bigWig [10]\n"
         "    -h    Print this message and exit\n"
+        "Order of operations: a -> m -> l -> t\n"
         , BWTK_VERSION, BWTK_YEAR
     );
 }
@@ -625,11 +627,11 @@ static int adjust(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     bigWigFile_t *bw_in = NULL, *bw_out = NULL;
-    bool do_log10 = false;
-    float mult = 1.0f, add = 0.0f;
+    bool do_log10 = false, use_trim = false;
+    float mult = 1.0f, add = 0.0f, trim;
     int zoomLevels = 10;
     int opt;
-    while ((opt = getopt(argc, argv, "i:b:o:m:a:lz:h")) != -1) {
+    while ((opt = getopt(argc, argv, "i:b:o:m:a:lt:z:h")) != -1) {
         switch (opt) {
             case 'i':
                 if (!bwIsBigWig(optarg, NULL)) {
@@ -668,6 +670,14 @@ static int adjust(int argc, char **argv) {
                 break;
             case 'l':
                 do_log10 = true;
+                break;
+            case 't':
+                use_trim = true;
+                trim = atof(optarg);
+                if (trim == 0 && errno == ERANGE) {
+                    fprintf(stderr, "[E::adjust] Unable to parse '-t': %s\n", strerror(errno));
+                    return EXIT_FAILURE;
+                }
                 break;
             case 'z':
                 zoomLevels = atoi(optarg);
@@ -736,6 +746,7 @@ static int adjust(int argc, char **argv) {
                 val += add;
                 val *= mult;
                 if (do_log10) val = log10f(val);
+                if (use_trim && val > trim) val = trim;
                 if (ranges->n == ranges->m) {
                     addBwInterval(bw_out, ranges);
                 } else {
