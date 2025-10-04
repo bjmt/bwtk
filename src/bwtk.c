@@ -29,7 +29,7 @@
 #include "kseq.h"
 #include "khash.h"
 
-#define BWTK_VERSION "1.1.0"
+#define BWTK_VERSION "1.1.1"
 #define BWTK_YEAR "2025"
 
 // common ----------------------------------------------------------------------
@@ -67,6 +67,9 @@ static void *calloc_or_die(size_t size, const char *func_name) {
 #ifndef kroundup32
 #define kroundup32(x) (--(x), (x)|=(x)>>1, (x)|=(x)>>2, (x)|=(x)>>4, (x)|=(x)>>8, (x)|=(x)>>16, ++(x))
 #endif
+
+#define min(a, b) ((a) > (b) ? (b) : (a))
+#define max(a, b) ((a) < (b) ? (b) : (a))
 
 // Increasing this value only increases the memory usage without actually speeding
 // anything up.
@@ -416,8 +419,9 @@ static void help_subset(void) {
         "    -a    Add this value to scores [0]\n"
         "    -m    Multiply scores by this value [1]\n"
         "    -l    log10-transform scores\n"
+        "    -t    Trim values above this max\n"
         "    -h    Print this message and exit\n"
-        "Order of operations: a -> m -> l\n"
+        "Order of operations: a -> m -> l -> t\n"
         , BWTK_VERSION, BWTK_YEAR
     );
 }
@@ -435,10 +439,10 @@ static int subset(int argc, char **argv) {
     char *bedfn = NULL;
     bed_t *bed;
     bigWigFile_t *bw_in = NULL, *bw_out = NULL;
-    bool do_log10 = false;
-    float mult = 1.0f, add = 0.0f;
+    bool do_log10 = false, use_trim;
+    float mult = 1.0f, add = 0.0f, trim;
     int opt;
-    while ((opt = getopt(argc, argv, "i:b:o:m:a:lh")) != -1) {
+    while ((opt = getopt(argc, argv, "i:b:o:m:a:lt:h")) != -1) {
         switch (opt) {
             case 'i':
                 if (!bwIsBigWig(optarg, NULL)) {
@@ -480,6 +484,14 @@ static int subset(int argc, char **argv) {
                 break;
             case 'l':
                 do_log10 = true;
+                break;
+            case 't':
+                use_trim = true;
+                trim = atof(optarg);
+                if (trim == 0 && errno == ERANGE) {
+                    fprintf(stderr, "[E::adjust] Unable to parse '-t': %s\n", strerror(errno));
+                    return EXIT_FAILURE;
+                }
                 break;
             case 'h':
                 help_subset();
@@ -561,6 +573,7 @@ fprintf(stderr, "[E::subset] Missing -i\n");
                         val += add;
                         val *= mult;
                         if (do_log10) val = log10f(val);
+                        if (use_trim) val = min(trim, val);
                         if (ranges->n == ranges->m) {
                             addBwInterval(bw_out, ranges);
                         }
@@ -954,8 +967,9 @@ static void help_bw2bg(void) {
         "    -a    Add this value to scores [0]\n"
         "    -m    Multiply scores by this value [1]\n"
         "    -l    log10-transform scores\n"
+        "    -t    Trim values above this max\n"
         "    -h    Print this message and exit\n"
-        "Order of operations: a -> m -> l\n"
+        "Order of operations: a -> m -> l -> t\n"
         , BWTK_VERSION, BWTK_YEAR
     );
 }
@@ -976,11 +990,11 @@ static int bw2bg(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     int opt;
-    bool tofile = true, do_log10 = false;
-    float mult = 1.0f, add = 0.0f;
+    bool tofile = true, do_log10 = false, use_trim = false;
+    float mult = 1.0f, add = 0.0f, trim;
     fout.f = NULL;
     bigWigFile_t *bw = NULL;
-    while ((opt = getopt(argc, argv, "i:o:m:a:lh")) != -1) {
+    while ((opt = getopt(argc, argv, "i:o:m:a:lt:h")) != -1) {
         switch (opt) {
             case 'i':
                 if (!bwIsBigWig(optarg, NULL)) {
@@ -1030,6 +1044,14 @@ static int bw2bg(int argc, char **argv) {
             case 'l':
                 do_log10 = true;
                 break;
+            case 't':
+                use_trim = true;
+                trim = atof(optarg);
+                if (trim == 0 && errno == ERANGE) {
+                    fprintf(stderr, "[E::adjust] Unable to parse '-t': %s\n", strerror(errno));
+                    return EXIT_FAILURE;
+                }
+                break;
             case 'h':
                 help_bw2bg();
                 return EXIT_SUCCESS;
@@ -1066,6 +1088,7 @@ static int bw2bg(int argc, char **argv) {
                 val += add;
                 val *= mult;
                 if (do_log10) val = log10f(val);
+                if (use_trim) val = min(val, trim);
                 if (tofile) {
                     gzprintf(fout.gz, "%s\t%"PRIu32"\t%"PRIu32"\t%g\n", chromName, start, end, (double) val);
                 } else {
@@ -1194,9 +1217,6 @@ static void help_merge(void) {
         , BWTK_VERSION, BWTK_YEAR
     );
 }
-
-#define min(a, b) ((a) > (b) ? (b) : (a))
-#define max(a, b) ((a) < (b) ? (b) : (a))
 
 #define BW_MERGE_CHUNK_SIZE 1000000
 
@@ -1469,10 +1489,11 @@ static void help_bg2bw(void) {
         "    -a    Add this value to scores [0]\n"
         "    -m    Multiply scores by this value [1]\n"
         "    -l    log10-transform scores\n"
+        "    -t    Trim values above this max\n"
         "    -p    Use a preset genome instead of -g [%s]\n"
         "    -u    When using -p, use UCSC-style names (default: Ensembl)\n"
         "    -h    Print this message and exit\n"
-        "Order of operations: a -> m -> l\n"
+        "Order of operations: a -> m -> l -> t\n"
         , BWTK_VERSION, BWTK_YEAR, PRESET_GENOMES
     );
 }
@@ -1559,10 +1580,10 @@ static int bg2bw(int argc, char **argv) {
     int opt;
     gzFile bg = NULL, cs = NULL;
     bigWigFile_t *bw = NULL;
-    float mult = 1.0f, add = 0.0f;
+    float mult = 1.0f, add = 0.0f, trim;
     char *preset = NULL;
-    bool do_log10 = false, ucsc = false;
-    while ((opt = getopt(argc, argv, "i:o:g:m:a:lp:uh")) != -1) {
+    bool do_log10 = false, ucsc = false, use_trim = false;
+    while ((opt = getopt(argc, argv, "i:o:g:m:a:lt:p:uh")) != -1) {
         switch (opt) {
             case 'i':
                 bg = strcmp(optarg, "-") ? gzopen(optarg, "r") : gzdopen(fileno(stdin), "r");
@@ -1604,6 +1625,14 @@ static int bg2bw(int argc, char **argv) {
                 break;
             case 'l':
                 do_log10 = true;
+                break;
+            case 't':
+                use_trim = true;
+                trim = atof(optarg);
+                if (trim == 0 && errno == ERANGE) {
+                    fprintf(stderr, "[E::adjust] Unable to parse '-t': %s\n", strerror(errno));
+                    return EXIT_FAILURE;
+                }
                 break;
             case 'p':
                 preset = optarg;
@@ -1702,6 +1731,7 @@ static int bg2bw(int argc, char **argv) {
         val += add;
         val *= mult;
         if (do_log10) val = log10f(val);
+        if (use_trim) val = min(trim, val);
         erow++;
         k = kh_get(str_m, bgChroms, chr);
         if (k == kh_end(bgChroms)) {
