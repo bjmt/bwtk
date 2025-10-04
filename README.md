@@ -17,14 +17,14 @@ GBs of memory for larger files). bwtk is otherwise a fairly lightweight program.
 ## Installation
 
 ```sh
-make libBigWig
+make libz libBigWig
 make release
 ```
 
 ## Quick start
 
 ```
-bwtk v1.1.0  Copyright (C) 2025  Benjamin Jean-Marie Tremblay
+bwtk v1.1.1  Copyright (C) 2025  Benjamin Jean-Marie Tremblay
 Usage:  bwtk <subcommand> [options]
 Available subcommands:
     bw2bg      Convert a bigWig file to bedGraph
