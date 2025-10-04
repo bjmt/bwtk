@@ -29,7 +29,7 @@
 #include "kseq.h"
 #include "khash.h"
 
-#define BWTK_VERSION "1.0.0"
+#define BWTK_VERSION "1.1.0"
 #define BWTK_YEAR "2025"
 
 // common ----------------------------------------------------------------------
@@ -413,10 +413,11 @@ static void help_subset(void) {
         "    -i    Input bigWig\n"
         "    -b    BED file containing ranges to subset\n"
         "    -o    Output bigWig\n"
-        "    -m    Multiply scores by this value [1]\n"
         "    -a    Add this value to scores [0]\n"
+        "    -m    Multiply scores by this value [1]\n"
         "    -l    log10-transform scores\n"
         "    -h    Print this message and exit\n"
+        "Order of operations: a -> m -> l\n"
         , BWTK_VERSION, BWTK_YEAR
     );
 }
@@ -497,7 +498,7 @@ static int subset(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     if (bw_in == NULL) {
-        fprintf(stderr, "[E::subset] Missing -i\n");
+fprintf(stderr, "[E::subset] Missing -i\n");
         return EXIT_FAILURE;
     }
     if (bw_out == NULL) {
@@ -535,7 +536,6 @@ static int subset(int argc, char **argv) {
     khint_t k;
     bedList_t *b;
     float val;
-    // TODO: Test what happens when a range is absent a bw.
     for (int64_t i = 0; i < bw_in->cl->nKeys; i++) {
         chromName = bw_in->cl->chrom[i];
         k = kh_get(bedHash, bed->data, chromName);
@@ -563,12 +563,11 @@ static int subset(int argc, char **argv) {
                         if (do_log10) val = log10f(val);
                         if (ranges->n == ranges->m) {
                             addBwInterval(bw_out, ranges);
-                        } else {
-                            ranges->chrom[ranges->n] = chromName;
-                            ranges->start[ranges->n] = start;
-                            ranges->end[ranges->n] = end;
-                            ranges->val[ranges->n++] = val;
                         }
+                        ranges->chrom[ranges->n] = chromName;
+                        ranges->start[ranges->n] = start;
+ranges->end[ranges->n] = end;
+                        ranges->val[ranges->n++] = val;
 #ifdef DEBUG
                         bwdumps++;
 #endif
@@ -676,7 +675,7 @@ static int adjust(int argc, char **argv) {
                 trim = atof(optarg);
                 if (trim == 0 && errno == ERANGE) {
                     fprintf(stderr, "[E::adjust] Unable to parse '-t': %s\n", strerror(errno));
-                    return EXIT_FAILURE;
+return EXIT_FAILURE;
                 }
                 break;
             case 'z':
@@ -749,12 +748,11 @@ static int adjust(int argc, char **argv) {
                 if (use_trim && val > trim) val = trim;
                 if (ranges->n == ranges->m) {
                     addBwInterval(bw_out, ranges);
-                } else {
-                    ranges->chrom[ranges->n] = chromName;
-                    ranges->start[ranges->n] = start;
-                    ranges->end[ranges->n] = end;
-                    ranges->val[ranges->n++] = val;
                 }
+                ranges->chrom[ranges->n] = chromName;
+                ranges->start[ranges->n] = start;
+                ranges->end[ranges->n] = end;
+                ranges->val[ranges->n++] = val;
 #ifdef DEBUG
                 bwdumps++;
 #endif
@@ -953,10 +951,11 @@ static void help_bw2bg(void) {
         "bwtk bw2bg [options] -i <file.bw> -o <file.bedGraph.gz>\n"
         "    -i    Input bigWig\n"
         "    -o    Output gzipped bedGraph, use '-' for stdout (ungzipped)\n"
-        "    -m    Multiply scores by this value [1]\n"
         "    -a    Add this value to scores [0]\n"
+        "    -m    Multiply scores by this value [1]\n"
         "    -l    log10-transform scores\n"
         "    -h    Print this message and exit\n"
+        "Order of operations: a -> m -> l\n"
         , BWTK_VERSION, BWTK_YEAR
     );
 }
@@ -1176,6 +1175,284 @@ static int chromsizes(int argc, char **argv) {
     return EXIT_SUCCESS;
 }
 
+// merge -----------------------------------------------------------------------
+
+static void help_merge(void) {
+        /* "    -c    Merge chromosomes in chunks to save memory\n" */
+    printf(
+        "bwtk v%s  Copyright (C) %s  Benjamin Jean-Marie Tremblay\n"
+        "bwtk merge [options] -o <out.bw> <file1.bw> <file2.bw> [...]\n"
+        "    -o    Output bigWig\n"
+        "    -s    Sum values instead of averaging\n"
+        "    -M    Take the max value instead of averaging\n"
+        "    -a    Add this value to scores [0]\n"
+        "    -m    Multiply scores by this value [1]\n"
+        "    -l    log10-transform scores\n"
+        "    -t    Trim values above this max\n"
+        "    -h    Print this message and exit\n"
+        "Order of operations: avg|sum|max -> a -> m -> l -> t\n"
+        , BWTK_VERSION, BWTK_YEAR
+    );
+}
+
+#define min(a, b) ((a) > (b) ? (b) : (a))
+#define max(a, b) ((a) < (b) ? (b) : (a))
+
+#define BW_MERGE_CHUNK_SIZE 1000000
+
+static int addConsensusChromsToBw(bigWigFile_t **bw_in, const int n_bw, bigWigFile_t *bw_out) {
+    khash_t(str_m) *conChroms = kh_init(str_m);
+    khint64_t k;
+    int absent;
+    bool warn_about_size_diffs = false;
+    for (int i = 0; i < n_bw; i++) {
+        for (int j = 0; j < bw_in[i]->cl->nKeys; j++) {
+            k = kh_get(str_m, conChroms, bw_in[i]->cl->chrom[j]);
+            if (k == kh_end(conChroms)) {
+                k = kh_put(str_m, conChroms, bw_in[i]->cl->chrom[j], &absent);
+                if (absent == -1) {
+                    fprintf(stderr, "[E::addConsensusChroms] Failed to create conChroms hash table\n");
+                    return 1;
+                }
+                kh_val(conChroms, k).x = 0;
+                kh_val(conChroms, k).y = (int64_t) bw_in[i]->cl->len[j];
+            } else {
+                if (kh_val(conChroms, k).y != (int64_t) bw_in[i]->cl->len[j]) {
+                    warn_about_size_diffs = true;
+                    kh_val(conChroms, k).y = min(kh_val(conChroms, k).y, (int64_t) bw_in[i]->cl->len[j]);
+                }
+            }
+            kh_val(conChroms, k).x++;
+        }
+    }
+    if (warn_about_size_diffs) {
+        fprintf(stderr, "[W::addConsensusChroms] Found identical chromosomes across files with differing lengths\n");
+    }
+    int total_chroms = kh_size(conChroms);
+    int final_chroms = 0;
+    for (k = kh_begin(conChroms); k!= kh_end(conChroms); k++) {
+        if (kh_exist(conChroms, k)) {
+            int64_t n_chrom = kh_val(conChroms, k).x;
+            if (n_chrom == (int64_t) n_bw) {
+                final_chroms++;
+            }
+        }
+    }
+    if (!final_chroms) {
+        fprintf(stderr, "[E::addConsensusChroms] Found %d possible chromosomes, but none are present in all bigWigs\n", total_chroms);
+        return EXIT_FAILURE;
+    }
+    if (final_chroms < total_chroms) {
+        fprintf(stderr, "[W::addConsensusChroms] Found %d possible chromosomes, but only %d are present in all bigWigs\n", total_chroms, final_chroms);
+    }
+    char **chromNames = alloc(sizeof(char *) * final_chroms);
+    uint32_t *chromLens = alloc(sizeof(uint32_t) * final_chroms);
+    int chrom_i = 0;
+    for (k = kh_begin(conChroms); k!= kh_end(conChroms); k++) {
+        if (kh_exist(conChroms, k) && kh_val(conChroms, k).x == (int64_t) n_bw) {
+            chromNames[chrom_i] = strdup(kh_key(conChroms, k));
+            chromLens[chrom_i++] = (uint32_t) kh_val(conChroms, k).y;
+        }
+    }
+    bw_out->cl = bwCreateChromList((const char * const *)chromNames, chromLens, final_chroms);
+    if (!bw_out->cl) {
+        fprintf(stderr, "[E::merge] Failed to create output bigWig chrom list\n");
+        return EXIT_FAILURE;
+    }
+    kh_destroy(str_m, conChroms);
+    free(chromLens);
+    for (int i = 0; i < final_chroms; i++) {
+        free(chromNames[i]);
+    }
+    free(chromNames);
+    return 0;
+}
+
+static int merge(int argc, char **argv) {
+    if (argc == 1) {
+        fprintf(stderr, "[E::merge] No arguments provided, use -h for usage\n");
+        help_merge();
+        return EXIT_FAILURE;
+    }
+    if (bwInit(1<<17) != 0) {
+        fprintf(stderr, "[E::merge] Unable to init curl buffer\n");
+        return EXIT_FAILURE;
+    }
+    int opt, n_bw;
+    bigWigFile_t *bw_out = NULL;
+    bigWigFile_t **bw_in = NULL;
+    float mult = 1.0f, add = 0.0f, trim;
+    bool do_log10 = false, use_trim = false;
+    bool sum_only = false, take_max = false;
+    /* bool chunk = false; */
+    while ((opt = getopt(argc, argv, "o:sMa:m:lt:h")) != -1) {
+        switch (opt) {
+            case 'o':
+                bw_out = bwOpen(optarg, NULL, "w");
+                if (!bw_out) {
+                    fprintf(stderr, "[E::merge] Unable to create output (-o) '%s'\n", optarg);
+                    return EXIT_FAILURE;
+                }
+                break;
+            case 's':
+                sum_only = true;
+                break;
+            case 'M':
+                take_max = true;
+                break;
+            case 'm':
+                mult = atof(optarg);
+                if (mult == 0 && errno == ERANGE) {
+                    fprintf(stderr, "[E::bg2bw] Unable to parse '-m': %s\n", strerror(errno));
+                    return EXIT_FAILURE;
+                } else if (mult == 0) {
+                    fprintf(stderr, "[E::bg2bw] '-m' must be nonzero\n");
+                    return EXIT_FAILURE;
+                }
+                break;
+            case 'a':
+                add = atof(optarg);
+                if (add == 0 && errno == ERANGE) {
+                    fprintf(stderr, "[E::bg2bw] Unable to parse '-a': %s\n", strerror(errno));
+                    return EXIT_FAILURE;
+                }
+                break;
+            case 'l':
+                do_log10 = true;
+                break;
+            case 't':
+                use_trim = true;
+                trim = atof(optarg);
+                if (trim == 0 && errno == ERANGE) {
+                    fprintf(stderr, "[E::adjust] Unable to parse '-t': %s\n", strerror(errno));
+                    return EXIT_FAILURE;
+                }
+                break;
+            case 'h':
+                help_merge();
+                return EXIT_SUCCESS;
+            default:
+                return EXIT_FAILURE;
+        }
+    }
+    if (sum_only && take_max) {
+        fprintf(stderr, "[E::merge] Cannot set both -s and -M\n");
+        return EXIT_FAILURE;
+    }
+    if (bw_out == NULL) {
+        fprintf(stderr, "[E::merge] Missing output (-o)\n");
+        return EXIT_FAILURE;
+    }
+    if (optind == argc) {
+        fprintf(stderr, "[E::merge] Missing input bigWigs\n");
+        return EXIT_FAILURE;
+    }
+    n_bw = argc - optind;
+    if (n_bw < 2) {
+        fprintf(stderr, "[E::merge] Expected at least two input bigWigs\n");
+        return EXIT_FAILURE;
+    }
+    bw_in = alloc(sizeof(bigWigFile_t) * n_bw);
+    for (int i = 0; i < n_bw; i++) {
+        if (!bwIsBigWig(argv[optind + i], NULL)) {
+            fprintf(stderr, "[E::merge] File is not a bigWig: '%s'\n", argv[optind + i]);
+            return EXIT_FAILURE;
+        }
+        bw_in[i] = bwOpen(argv[optind + i], NULL, "r");
+        if (!bw_in[i]) {
+            fprintf(stderr, "[E::merge] Unable to open bigWig: '%s'\n", argv[optind + i]);
+            return EXIT_FAILURE;
+        }
+    }
+    if (bwCreateHdr(bw_out, 10)) {
+        fprintf(stderr, "[E::merge] Failed to init output bigWig header\n");
+        return EXIT_FAILURE;
+    }
+    if (addConsensusChromsToBw(bw_in, n_bw, bw_out)) {
+        return EXIT_FAILURE;
+    }
+    if (bwWriteHdr(bw_out)) {
+        fprintf(stderr, "[E::merge] Failed to write output bigWig header\n");
+        return EXIT_FAILURE;
+    }
+
+    ranges_t *ranges = alloc(sizeof(ranges_t));
+    ranges->m = RANGES_MEM;
+    ranges->chrom = alloc(sizeof(char *) * ranges->m);
+    ranges->start = alloc(sizeof(uint32_t) * ranges->m);
+    ranges->end = alloc(sizeof(uint32_t) * ranges->m);
+    ranges->val = alloc(sizeof(float) * ranges->m);
+
+    bwOverlapIterator_t *bwIt;
+    uint32_t max_len = bw_out->cl->len[0];
+    for (int i = 1; i < bw_out->cl->nKeys; i++) {
+        max_len = max(max_len, bw_out->cl->len[i]);
+    }
+    float *values = alloc(sizeof(float) * max_len);
+    for (int i = 0; i < bw_out->cl->nKeys; i++) {
+        memset(values, 0, bw_out->cl->len[i] * sizeof(float));
+        for (int j = 0; j < n_bw; j++) {
+            bwIt = bwOverlappingIntervalsIterator(bw_in[j], bw_out->cl->chrom[i], 0, bw_out->cl->len[i], BW_ITERATOR_CHUNKS);
+            if (bwIt == NULL) {
+                fprintf(stderr, "[E::merge] Error traversing bigWig\n");
+                return EXIT_FAILURE;
+            }
+            while (bwIt->data) {
+                for (int64_t h = 0; h < bwIt->intervals->l; h++) {
+                    for (uint32_t m = bwIt->intervals->start[h]; m < bwIt->intervals->end[h]; m++) {
+                        if (take_max) {
+                            values[m] = max(values[m], bwIt->intervals->value[h]);
+                        } else if (sum_only) {
+                            values[m] += bwIt->intervals->value[h];
+                        } else {
+                            values[m] += bwIt->intervals->value[h] / (float) n_bw;
+                        }
+                    }
+                }
+                bwIt = bwIteratorNext(bwIt);
+                if (bwIt == NULL) {
+                    fprintf(stderr, "[E::merge] Error traversing bigWig\n");
+                    return EXIT_FAILURE;
+                }
+            }
+            bwIteratorDestroy(bwIt);
+        }
+        ranges->times_added = 0;
+        for (uint32_t j = 0; j < bw_out->cl->len[i]; j++) {
+            if (ranges->n == ranges->m) {
+                addBwInterval(bw_out, ranges);
+            }
+            ranges->chrom[ranges->n] = bw_out->cl->chrom[i];
+            ranges->start[ranges->n] = j;
+            ranges->val[ranges->n] = values[j];
+            ranges->val[ranges->n] += add;
+            ranges->val[ranges->n] *= mult;
+            if (do_log10) ranges->val[ranges->n] = log10f(ranges->val[ranges->n]);
+            if (use_trim) ranges->val[ranges->n] = min(trim, ranges->val[ranges->n]);
+            while (j + 1 < bw_out->cl->len[i] && values[j + 1] == values[j]) j++;
+            ranges->end[ranges->n++] = j + 1;
+        }
+        if (ranges->n) {
+            addBwInterval(bw_out, ranges);
+        }
+    }
+    free(values);
+    /*  TODO: implement chunking (instead of alloc()'ing whole chromosome)
+    } else {
+        fprintf(stderr, "[E::merge] -c not yet implemented.\n");
+        return EXIT_FAILURE;
+    }
+    */
+
+    for (int i = 0; i < n_bw; i++) {
+        bwClose(bw_in[i]);
+    }
+    bwClose(bw_out);
+    bwCleanup();
+    return EXIT_SUCCESS;
+
+}
+
 // bg2bw -----------------------------------------------------------------------
 
 #define CHROMSIZES_MEM   128
@@ -1189,12 +1466,13 @@ static void help_bg2bw(void) {
         "    -i    Input bedGraph (can be gzipped), use '-' for stdin\n"
         "    -o    Output bigWig\n"
         "    -g    Genome chrom.sizes or genome.fa.fai file\n"
-        "    -m    Multiply scores by this value [1]\n"
         "    -a    Add this value to scores [0]\n"
+        "    -m    Multiply scores by this value [1]\n"
         "    -l    log10-transform scores\n"
         "    -p    Use a preset genome instead of -g [%s]\n"
         "    -u    When using -p, use UCSC-style names (default: Ensembl)\n"
         "    -h    Print this message and exit\n"
+        "Order of operations: a -> m -> l\n"
         , BWTK_VERSION, BWTK_YEAR, PRESET_GENOMES
     );
 }
@@ -1507,13 +1785,13 @@ static int bg2bw(int argc, char **argv) {
 // main ------------------------------------------------------------------------
 
 static void help(void) {
-        /* "    merge      Average multiple bigWig files together\n" */
     printf(
         "bwtk v%s  Copyright (C) %s  Benjamin Jean-Marie Tremblay\n"
         "Usage:  bwtk <subcommand> [options]\n"
         "Available subcommands:\n"
         "    bw2bg      Convert a bigWig file to bedGraph\n"
         "    bg2bw      Convert a bedGraph file to bigWig\n"
+        "    merge      Average multiple bigWig files together\n"
         "    values     Return bigWig values from overlapping BED ranges\n"
         "    subset     Subset a bigWig using a BED file\n"
         "    chroms     Print a chrom.sizes file from a bigWig header\n"
@@ -1549,6 +1827,8 @@ int main(int argc, char **argv) {
         return chromsizes(argc - 1, argv + 1);
     } else if (strcmp(argv[1], "adjust") == 0) {
         return adjust(argc - 1, argv + 1);
+    } else if (strcmp(argv[1], "merge") == 0) {
+        return merge(argc - 1, argv + 1);
     } else {
         fprintf(stderr, "[E::main] Unknown subcommand '%s'; try 'help' for usage\n", argv[1]);
         return EXIT_FAILURE;
