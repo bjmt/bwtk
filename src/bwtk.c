@@ -510,7 +510,7 @@ static int subset(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     if (bw_in == NULL) {
-fprintf(stderr, "[E::subset] Missing -i\n");
+        fprintf(stderr, "[E::subset] Missing -i\n");
         return EXIT_FAILURE;
     }
     if (bw_out == NULL) {
@@ -579,7 +579,7 @@ fprintf(stderr, "[E::subset] Missing -i\n");
                         }
                         ranges->chrom[ranges->n] = chromName;
                         ranges->start[ranges->n] = start;
-ranges->end[ranges->n] = end;
+                        ranges->end[ranges->n] = end;
                         ranges->val[ranges->n++] = val;
 #ifdef DEBUG
                         bwdumps++;
@@ -688,7 +688,7 @@ static int adjust(int argc, char **argv) {
                 trim = atof(optarg);
                 if (trim == 0 && errno == ERANGE) {
                     fprintf(stderr, "[E::adjust] Unable to parse '-t': %s\n", strerror(errno));
-return EXIT_FAILURE;
+                    return EXIT_FAILURE;
                 }
                 break;
             case 'z':
