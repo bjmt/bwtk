@@ -29,7 +29,7 @@
 #include "kseq.h"
 #include "khash.h"
 
-#define BWTK_VERSION "1.1.1"
+#define BWTK_VERSION "1.2.0"
 #define BWTK_YEAR "2025"
 
 // common ----------------------------------------------------------------------
@@ -446,12 +446,12 @@ static int subset(int argc, char **argv) {
         switch (opt) {
             case 'i':
                 if (!bwIsBigWig(optarg, NULL)) {
-                    fprintf(stderr, "[E::values] Not a bigWig file (-i): '%s'\n", optarg);
+                    fprintf(stderr, "[E::subset] Not a bigWig file (-i): '%s'\n", optarg);
                     return EXIT_FAILURE;
                 }
                 bw_in = bwOpen(optarg, NULL, "r");
                 if (!bw_in) {
-                    fprintf(stderr, "[E::values] Unable to open bigWig (-i): '%s'\n", optarg);
+                    fprintf(stderr, "[E::subset] Unable to open bigWig (-i): '%s'\n", optarg);
                     return EXIT_FAILURE;
                 }
                 break;
@@ -468,17 +468,17 @@ static int subset(int argc, char **argv) {
             case 'm':
                 mult = atof(optarg);
                 if (mult == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::bw2bg] Unable to parse '-m': %s\n", strerror(errno));
+                    fprintf(stderr, "[E::subset] Unable to parse '-m': %s\n", strerror(errno));
                     return EXIT_FAILURE;
                 } else if (mult == 0) {
-                    fprintf(stderr, "[E::bw2bg] '-m' must be nonzero\n");
+                    fprintf(stderr, "[E::subset] '-m' must be nonzero\n");
                     return EXIT_FAILURE;
                 }
                 break;
             case 'a':
                 add = atof(optarg);
                 if (add == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::bw2bg] Unable to parse '-a': %s\n", strerror(errno));
+                    fprintf(stderr, "[E::subset] Unable to parse '-a': %s\n", strerror(errno));
                     return EXIT_FAILURE;
                 }
                 break;
@@ -489,7 +489,7 @@ static int subset(int argc, char **argv) {
                 use_trim = true;
                 trim = atof(optarg);
                 if (trim == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::adjust] Unable to parse '-t': %s\n", strerror(errno));
+                    fprintf(stderr, "[E::subset] Unable to parse '-t': %s\n", strerror(errno));
                     return EXIT_FAILURE;
                 }
                 break;
@@ -789,6 +789,150 @@ static int adjust(int argc, char **argv) {
     return EXIT_SUCCESS;
 }
 
+// score ----------------------------------------------------------------------
+
+static void help_score(void) {
+    printf(
+        "bwtk v%s  Copyright (C) %s  Benjamin Jean-Marie Tremblay\n"
+        "bwtk score [options] -i <file.bw> -b <ranges.bed> -o <scores.tsv>\n"
+        "    -i    Input bigWig\n"
+        "    -b    BED file with ranges to score\n"
+        "    -o    Output scores in TSV format (use '-' for stdout)\n"
+        "    -h    Print this message and exit\n"
+        , BWTK_VERSION, BWTK_YEAR
+    );
+}
+
+static int score(int argc, char **argv) {
+    if (argc == 1) {
+        fprintf(stderr, "[E::score] No arguments provided\n");
+        help_score();
+        return EXIT_FAILURE;
+    }
+    if (bwInit(1<<17) != 0) {
+        fprintf(stderr, "[E::score] Unable to init curl buffer\n");
+        return EXIT_FAILURE;
+    }
+    char *bedfn = NULL;
+    bed_t *bed;
+    bigWigFile_t *bw = NULL;
+    FILE *fout = NULL;
+    int opt;
+    while ((opt = getopt(argc, argv, "i:b:o:h")) != -1) {
+        switch (opt) {
+            case 'i':
+                if (!bwIsBigWig(optarg, NULL)) {
+                    fprintf(stderr, "[E::score] Not a bigWig file (-i): '%s'\n", optarg);
+                    return EXIT_FAILURE;
+                }
+                bw = bwOpen(optarg, NULL, "r");
+                if (!bw) {
+                    fprintf(stderr, "[E::score] Unable to open bigWig (-i): '%s'\n", optarg);
+                    return EXIT_FAILURE;
+                }
+                break;
+            case 'b':
+                bedfn = optarg;
+                break;
+            case 'o':
+                fout = strcmp(optarg, "-") ? fopen(optarg, "w") : fdopen(1, "w");
+                if (fout == NULL) {
+                    fprintf(stderr, "[E::score] Unable to open file (-o): %s\n", strerror(errno));
+                    return EXIT_FAILURE;
+                }
+                break;
+            case 'h':
+                help_score();
+                return EXIT_SUCCESS;
+            default:
+                return EXIT_FAILURE;
+        }
+    }
+    if (bedfn != NULL) {
+        bed = readBED(bedfn, false, 0, 0, 0);
+        if (bed == NULL) return EXIT_FAILURE;
+        bed_index(bed->data);
+    } else {
+        fprintf(stderr, "[E::score] Missing -b\n");
+        return EXIT_FAILURE;
+    }
+    if (bw == NULL) {
+        fprintf(stderr, "[E::score] Missing -i\n");
+        return EXIT_FAILURE;
+    }
+    if (fout == NULL) {
+        fprintf(stderr, "[E::score] Missing -o\n");
+        return EXIT_FAILURE;
+    }
+
+    fputs("name\tsize\tcovered\tsum\tmean0\tmean\tmin\tmax\n", fout);
+
+    int64_t nranges = 0;
+    uint32_t bed_start, bed_end, start, end;
+    char *chromName;
+    khint_t k;
+    bedList_t *b;
+    bwOverlapIterator_t *bwVals;
+    uint32_t size, covered;
+    float sum, mean0, mean, min_val, max_val;
+    bool first = false;
+    for (int64_t i = 0; i < bw->cl->nKeys; i++) {
+        chromName = bw->cl->chrom[i];
+        k = kh_get(bedHash, bed->data, chromName);
+        if (k != kh_end(bed->data)) {
+            b = &kh_val(bed->data, k);
+            for (int j = 0; j < b->n; j++) {
+                nranges++;
+                bed_start = b->a[j].beg;
+                bed_end = b->a[j].end;
+                size = bed_end - bed_start;
+                bwVals = bwOverlappingIntervalsIterator(bw, chromName, bed_start, bed_end, BW_ITERATOR_CHUNKS);
+                if (bwVals == NULL) {
+                    fprintf(stderr, "[E::score] Error traversing bigWig\n");
+                    return EXIT_FAILURE;
+                }
+                first = true;
+                covered = sum = 0;
+                while (bwVals->data) {
+                    for (int64_t h = 0; h < bwVals->intervals->l; h++) {
+                        if (first) {
+                            max_val = min_val = bwVals->intervals->value[h];
+                            first = false;
+                        }
+                        min_val = min(min_val, bwVals->intervals->value[h]);
+                        max_val = max(max_val, bwVals->intervals->value[h]);
+                        start = max(bed_start, bwVals->intervals->start[h]);
+                        end = min(bed_end, bwVals->intervals->end[h]);
+                        covered += end - start;
+                        sum += bwVals->intervals->value[h] * (float) (end - start);
+                    }
+                    bwVals = bwIteratorNext(bwVals);
+                    if (bwVals == NULL) {
+                        fprintf(stderr, "[E::score] Error traversing bigWig\n");
+                        return EXIT_FAILURE;
+                    }
+                }
+                mean = sum / (float) covered;
+                mean0 = sum / (float) size;
+                fprintf(fout, "%s\t%u\t%u\t%g\t%g\t%g\t%g\t%g\n", bed->names[b->a[j].namei], size, covered, (double) sum, (double) mean0, (double) mean, (double) min_val, (double) max_val);
+                bwIteratorDestroy(bwVals);
+            }
+        }
+    }
+    if (!nranges) {
+        fprintf(stderr, "[E::score] Found zero valid BED ranges in bigWig\n");
+        return EXIT_FAILURE;
+    }
+    if (nranges < bed->n) {
+        fprintf(stderr, "[W::score] Found only %lld/%lld ranges in bigWig (missing chroms)\n", nranges, bed->n);
+    }
+
+    fclose(fout);
+    bwClose(bw);
+    bwCleanup();
+    return EXIT_SUCCESS;
+}
+
 // values ----------------------------------------------------------------------
 
 static void help_values(void) {
@@ -1048,7 +1192,7 @@ static int bw2bg(int argc, char **argv) {
                 use_trim = true;
                 trim = atof(optarg);
                 if (trim == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::adjust] Unable to parse '-t': %s\n", strerror(errno));
+                    fprintf(stderr, "[E::bw2bg] Unable to parse '-t': %s\n", strerror(errno));
                     return EXIT_FAILURE;
                 }
                 break;
@@ -1153,12 +1297,12 @@ static int chromsizes(int argc, char **argv) {
         switch (opt) {
             case 'i':
                 if (!bwIsBigWig(optarg, NULL)) {
-                    fprintf(stderr, "[E::bw2bg] Not a bigWig file (-i): '%s'\n", optarg);
+                    fprintf(stderr, "[E::chroms] Not a bigWig file (-i): '%s'\n", optarg);
                     return EXIT_FAILURE;
                 }
                 bw = bwOpen(optarg, NULL, "r");
                 if (!bw) {
-                    fprintf(stderr, "[E::bw2bg] Unable to open bigWig (-i): '%s'\n", optarg);
+                    fprintf(stderr, "[E::chroms] Unable to open bigWig (-i): '%s'\n", optarg);
                     return EXIT_FAILURE;
                 }
                 break;
@@ -1323,17 +1467,17 @@ static int merge(int argc, char **argv) {
             case 'm':
                 mult = atof(optarg);
                 if (mult == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::bg2bw] Unable to parse '-m': %s\n", strerror(errno));
+                    fprintf(stderr, "[E::merge] Unable to parse '-m': %s\n", strerror(errno));
                     return EXIT_FAILURE;
                 } else if (mult == 0) {
-                    fprintf(stderr, "[E::bg2bw] '-m' must be nonzero\n");
+                    fprintf(stderr, "[E::merge] '-m' must be nonzero\n");
                     return EXIT_FAILURE;
                 }
                 break;
             case 'a':
                 add = atof(optarg);
                 if (add == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::bg2bw] Unable to parse '-a': %s\n", strerror(errno));
+                    fprintf(stderr, "[E::merge] Unable to parse '-a': %s\n", strerror(errno));
                     return EXIT_FAILURE;
                 }
                 break;
@@ -1344,7 +1488,7 @@ static int merge(int argc, char **argv) {
                 use_trim = true;
                 trim = atof(optarg);
                 if (trim == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::adjust] Unable to parse '-t': %s\n", strerror(errno));
+                    fprintf(stderr, "[E::merge] Unable to parse '-t': %s\n", strerror(errno));
                     return EXIT_FAILURE;
                 }
                 break;
@@ -1630,7 +1774,7 @@ static int bg2bw(int argc, char **argv) {
                 use_trim = true;
                 trim = atof(optarg);
                 if (trim == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::adjust] Unable to parse '-t': %s\n", strerror(errno));
+                    fprintf(stderr, "[E::bg2bw] Unable to parse '-t': %s\n", strerror(errno));
                     return EXIT_FAILURE;
                 }
                 break;
@@ -1823,6 +1967,7 @@ static void help(void) {
         "    bg2bw      Convert a bedGraph file to bigWig\n"
         "    merge      Average multiple bigWig files together\n"
         "    values     Return bigWig values from overlapping BED ranges\n"
+        "    score      Get summary scores of bigWig values from BED ranges\n"
         "    subset     Subset a bigWig using a BED file\n"
         "    chroms     Print a chrom.sizes file from a bigWig header\n"
         "    adjust     Perform an operation on bigWig values\n"
@@ -1859,6 +2004,8 @@ int main(int argc, char **argv) {
         return adjust(argc - 1, argv + 1);
     } else if (strcmp(argv[1], "merge") == 0) {
         return merge(argc - 1, argv + 1);
+    } else if (strcmp(argv[1], "score") == 0) {
+        return score(argc - 1, argv + 1);
     } else {
         fprintf(stderr, "[E::main] Unknown subcommand '%s'; try 'help' for usage\n", argv[1]);
         return EXIT_FAILURE;
