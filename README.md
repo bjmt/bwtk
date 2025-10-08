@@ -24,13 +24,14 @@ make release
 ## Quick start
 
 ```
-bwtk v1.1.1  Copyright (C) 2025  Benjamin Jean-Marie Tremblay
+bwtk v1.2.0  Copyright (C) 2025  Benjamin Jean-Marie Tremblay
 Usage:  bwtk <subcommand> [options]
 Available subcommands:
     bw2bg      Convert a bigWig file to bedGraph
     bg2bw      Convert a bedGraph file to bigWig
     merge      Average multiple bigWig files together
     values     Return bigWig values from overlapping BED ranges
+    score      Get summary scores of bigWig values from BED ranges
     subset     Subset a bigWig using a BED file
     chroms     Print a chrom.sizes file from a bigWig header
     adjust     Perform an operation on bigWig values
