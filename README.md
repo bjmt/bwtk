@@ -14,6 +14,14 @@ final stages of creating new bigWigs, an indexing step occurs which can require
 a very large amount of memory (on the order of hundreds of MBs, perhaps even
 GBs of memory for larger files). bwtk is otherwise a fairly lightweight program.
 
+bwtk mostly reimplements some of the existing functionality from the original UCSC tools, with a few additions and improvements:
+
+- bedGraph files can be gzipped when converting to bigWig (`bg2bw`)
+- Multiple bigWigs can be averaged/summed/min'd/max'd together (`merge`)
+- Retrieval of single-base resolution data from BED ranges (`values`)
+- Subsetting of bigWigs (`subset`)
+- Value transformations such as addition, multiplication, log10 (`adjust`)
+
 ## Installation
 
 ```sh
