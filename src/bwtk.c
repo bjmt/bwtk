@@ -29,10 +29,15 @@
 #include "kseq.h"
 #include "khash.h"
 
-#define BWTK_VERSION "1.3.0"
+#define BWTK_VERSION "1.4.0"
 #define BWTK_YEAR "2025"
 
 // common ----------------------------------------------------------------------
+
+static union fout_t {
+    FILE   *f;
+    gzFile gz;
+} fout;
 
 typedef struct {
     int64_t x, y;
@@ -420,6 +425,7 @@ static void help_subset(void) {
         "    -m    Multiply scores by this value [1]\n"
         "    -l    log10-transform scores\n"
         "    -t    Trim values above this max\n"
+        "    -B    Output a .bedGraph.gz file instead ('-' for stdout)\n"
         "    -h    Print this message and exit\n"
         "Order of operations: a -> m -> l -> t\n"
         , BWTK_VERSION, BWTK_YEAR
@@ -436,13 +442,14 @@ static int subset(int argc, char **argv) {
         fprintf(stderr, "[E::subset] Unable to init curl buffer\n");
         return EXIT_FAILURE;
     }
-    char *bedfn = NULL;
+    char *bedfn = NULL, *outfn = NULL;
     bed_t *bed;
     bigWigFile_t *bw_in = NULL, *bw_out = NULL;
-    bool do_log10 = false, use_trim;
+    bool do_log10 = false, use_trim = false;
+    bool bg = false, tofile = true;
     float mult = 1.0f, add = 0.0f, trim;
     int opt;
-    while ((opt = getopt(argc, argv, "i:b:o:m:a:lt:h")) != -1) {
+    while ((opt = getopt(argc, argv, "i:b:o:m:a:lt:Bh")) != -1) {
         switch (opt) {
             case 'i':
                 if (!bwIsBigWig(optarg, NULL)) {
@@ -459,11 +466,7 @@ static int subset(int argc, char **argv) {
                 bedfn = optarg;
                 break;
             case 'o':
-                bw_out = bwOpen(optarg, NULL, "w");
-                if (!bw_out) {
-                    fprintf(stderr, "[E::subset] Unable to create output (-o) '%s'\n", optarg);
-                    return EXIT_FAILURE;
-                }
+                outfn = optarg;
                 break;
             case 'm':
                 mult = atof(optarg);
@@ -493,12 +496,44 @@ static int subset(int argc, char **argv) {
                     return EXIT_FAILURE;
                 }
                 break;
+            case 'B':
+                bg = true;
+                break;
             case 'h':
                 help_subset();
                 return EXIT_SUCCESS;
             default:
                 return EXIT_FAILURE;
         }
+    }
+    if (outfn != NULL) {
+        if (bg) {
+            fout.f = NULL;
+            if (strcmp(outfn, "-") == 0) {
+                tofile = false;
+                fout.f = fdopen(1, "w");
+                if (fout.f == NULL) {
+                    fprintf(stderr, "[E::subset] Failed to fdopen stdout: %s\n", strerror(errno));
+                    return EXIT_FAILURE;
+                }
+            } else {
+                fout.gz = gzopen(outfn, "wb");
+                if (fout.gz == NULL) {
+                    int e;
+                    fprintf(stderr, "[E::subset] Failed to open file '%s': %s\n", outfn, gzerror(fout.gz, &e));
+                    return EXIT_FAILURE;
+                }
+            }
+        } else {
+            bw_out = bwOpen(outfn, NULL, "w");
+            if (!bw_out) {
+                fprintf(stderr, "[E::subset] Unable to create output (-o) '%s'\n", outfn);
+                return EXIT_FAILURE;
+            }
+        }
+    } else {
+        fprintf(stderr, "[E::subset] Missing -o\n");
+        return EXIT_FAILURE;
     }
     if (bedfn != NULL) {
         bed = readBED(bedfn, false, 0, 0, 0);
@@ -513,31 +548,32 @@ static int subset(int argc, char **argv) {
         fprintf(stderr, "[E::subset] Missing -i\n");
         return EXIT_FAILURE;
     }
-    if (bw_out == NULL) {
-        fprintf(stderr, "[E::subset] Missing -o\n");
-        return EXIT_FAILURE;
+
+    if (!bg) {
+        if (bwCreateHdr(bw_out, 10)) {
+            fprintf(stderr, "[E::subset] Failed to init output bigWig header\n");
+            return EXIT_FAILURE;
+        }
+        bw_out->cl = bwCreateChromList((const char * const *)bw_in->cl->chrom, bw_in->cl->len, bw_in->cl->nKeys);
+        if (!bw_out->cl) {
+            fprintf(stderr, "[E::subset] Failed to create output bigWig chrom list\n");
+            return EXIT_FAILURE;
+        }
+        if (bwWriteHdr(bw_out)) {
+            fprintf(stderr, "[E::subset] Failed to write output bigWig header\n");
+            return EXIT_FAILURE;
+        }
     }
 
-    if (bwCreateHdr(bw_out, 10)) {
-        fprintf(stderr, "[E::subset] Failed to init output bigWig header\n");
-        return EXIT_FAILURE;
+    ranges_t *ranges;
+    if (!bg) {
+        ranges = alloc(sizeof(ranges_t));
+        ranges->m = RANGES_MEM;
+        ranges->chrom = alloc(sizeof(char *) * ranges->m);
+        ranges->start = alloc(sizeof(uint32_t) * ranges->m);
+        ranges->end = alloc(sizeof(uint32_t) * ranges->m);
+        ranges->val = alloc(sizeof(float) * ranges->m);
     }
-    bw_out->cl = bwCreateChromList((const char * const *)bw_in->cl->chrom, bw_in->cl->len, bw_in->cl->nKeys);
-    if (!bw_out->cl) {
-        fprintf(stderr, "[E::subset] Failed to create output bigWig chrom list\n");
-        return EXIT_FAILURE;
-    }
-    if (bwWriteHdr(bw_out)) {
-        fprintf(stderr, "[E::subset] Failed to write output bigWig header\n");
-        return EXIT_FAILURE;
-    }
-
-    ranges_t *ranges = alloc(sizeof(ranges_t));
-    ranges->m = RANGES_MEM;
-    ranges->chrom = alloc(sizeof(char *) * ranges->m);
-    ranges->start = alloc(sizeof(uint32_t) * ranges->m);
-    ranges->end = alloc(sizeof(uint32_t) * ranges->m);
-    ranges->val = alloc(sizeof(float) * ranges->m);
 
 #ifdef DEBUG
     int64_t bwdumps = 0;
@@ -553,7 +589,9 @@ static int subset(int argc, char **argv) {
         k = kh_get(bedHash, bed->data, chromName);
         if (k != kh_end(bed->data)) {
             b = &kh_val(bed->data, k);
-            ranges->n = ranges->times_added = 0;
+            if (!bg) {
+                ranges->n = ranges->times_added = 0;
+            }
             for (int j = 0; j < b->n; j++) {
                 nranges++;
                 bed_start = b->a[j].beg;
@@ -574,16 +612,24 @@ static int subset(int argc, char **argv) {
                         val *= mult;
                         if (do_log10) val = log10f(val);
                         if (use_trim) val = min(trim, val);
-                        if (ranges->n == ranges->m) {
-                            addBwInterval(bw_out, ranges);
-                        }
-                        ranges->chrom[ranges->n] = chromName;
-                        ranges->start[ranges->n] = start;
-                        ranges->end[ranges->n] = end;
-                        ranges->val[ranges->n++] = val;
+                        if (!bg) {
+                            if (ranges->n == ranges->m) {
+                                addBwInterval(bw_out, ranges);
+                            }
+                            ranges->chrom[ranges->n] = chromName;
+                            ranges->start[ranges->n] = start;
+                            ranges->end[ranges->n] = end;
+                            ranges->val[ranges->n++] = val;
 #ifdef DEBUG
-                        bwdumps++;
+                            bwdumps++;
 #endif
+                        } else {
+                            if (tofile) {
+                                gzprintf(fout.gz, "%s\t%"PRIu32"\t%"PRIu32"\t%g\n", chromName, start, end, (double) val);
+                            } else {
+                                fprintf(fout.f, "%s\t%"PRIu32"\t%"PRIu32"\t%g\n", chromName, start, end, (double) val);
+                            }
+                        }
                     }
                     bwIt = bwIteratorNext(bwIt);
                     if (bwIt == NULL) {
@@ -593,7 +639,9 @@ static int subset(int argc, char **argv) {
                 }
                 bwIteratorDestroy(bwIt);
             }
-            if (ranges->n) addBwInterval(bw_out, ranges);
+            if (!bg && ranges->n) {
+                addBwInterval(bw_out, ranges);
+            }
         }
     }
 #ifdef DEBUG
@@ -604,7 +652,9 @@ static int subset(int argc, char **argv) {
     }
 
     bwClose(bw_in);
-    bwClose(bw_out);
+    if (!bg) {
+        bwClose(bw_out);
+    }
     bwCleanup();
     return EXIT_SUCCESS;
 }
@@ -1117,11 +1167,6 @@ static void help_bw2bg(void) {
         , BWTK_VERSION, BWTK_YEAR
     );
 }
-
-static union fout_t {
-    FILE   *f;
-    gzFile gz;
-} fout;
 
 static int bw2bg(int argc, char **argv) {
     if (argc == 1) {

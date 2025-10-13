@@ -32,7 +32,7 @@ make release
 ## Quick start
 
 ```
-bwtk v1.2.0  Copyright (C) 2025  Benjamin Jean-Marie Tremblay
+bwtk v1.4.0  Copyright (C) 2025  Benjamin Jean-Marie Tremblay
 Usage:  bwtk <subcommand> [options]
 Available subcommands:
     bw2bg      Convert a bigWig file to bedGraph
