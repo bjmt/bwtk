@@ -29,7 +29,7 @@
 #include "kseq.h"
 #include "khash.h"
 
-#define BWTK_VERSION "1.2.0"
+#define BWTK_VERSION "1.3.0"
 #define BWTK_YEAR "2025"
 
 // common ----------------------------------------------------------------------
@@ -1636,6 +1636,7 @@ static void help_bg2bw(void) {
         "    -t    Trim values above this max\n"
         "    -p    Use a preset genome instead of -g [%s]\n"
         "    -u    When using -p, use UCSC-style names (default: Ensembl)\n"
+        "    -s    Ignore chromosomes found in bedGraph but not chrom.sizes\n"
         "    -h    Print this message and exit\n"
         "Order of operations: a -> m -> l -> t\n"
         , BWTK_VERSION, BWTK_YEAR, PRESET_GENOMES
@@ -1727,7 +1728,8 @@ static int bg2bw(int argc, char **argv) {
     float mult = 1.0f, add = 0.0f, trim;
     char *preset = NULL;
     bool do_log10 = false, ucsc = false, use_trim = false;
-    while ((opt = getopt(argc, argv, "i:o:g:m:a:lt:p:uh")) != -1) {
+    bool ignore_unknown_chr = false;
+    while ((opt = getopt(argc, argv, "i:o:g:m:a:lt:p:ush")) != -1) {
         switch (opt) {
             case 'i':
                 bg = strcmp(optarg, "-") ? gzopen(optarg, "r") : gzdopen(fileno(stdin), "r");
@@ -1783,6 +1785,9 @@ static int bg2bw(int argc, char **argv) {
                 break;
             case 'u':
                 ucsc = true;
+                break;
+            case 's':
+                ignore_unknown_chr = true;
                 break;
             case 'h':
                 help_bg2bw();
@@ -1872,16 +1877,20 @@ static int bg2bw(int argc, char **argv) {
             fprintf(stderr, "[E::bg2bw] Error: Malformed bedGraph data on line %lld\n", frow);
             return EXIT_FAILURE;
         }
+        k = kh_get(str_m, bgChroms, chr);
+        if (k == kh_end(bgChroms)) {
+            if (!ignore_unknown_chr) {
+                fprintf(stderr, "[E::bg2bw] Found unknown chrom '%s' on line %lld\n", chr, frow);
+                return EXIT_FAILURE;
+            } else {
+                continue;
+            }
+        }
         val += add;
         val *= mult;
         if (do_log10) val = log10f(val);
         if (use_trim) val = min(trim, val);
         erow++;
-        k = kh_get(str_m, bgChroms, chr);
-        if (k == kh_end(bgChroms)) {
-            fprintf(stderr, "[E::bg2bw] Found unknown chrom '%s' on line %lld\n", chr, frow);
-            return EXIT_FAILURE;
-        }
         if (kh_val(bgChroms, k).x != -1 && kh_val(bgChroms, k).x < (erow - 1)) {
             fprintf(stderr, "[E::bg2bw] bedGraph file must be sorted (found out of order chroms)\n");
             return EXIT_FAILURE;
