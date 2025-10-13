@@ -12,7 +12,7 @@ This program is built upon the
 bigWigs. One note of caution regarding bwtk's usage of this library: during the
 final stages of creating new bigWigs, an indexing step occurs which can require
 a very large amount of memory (on the order of hundreds of MBs, perhaps even
-GBs of memory for larger files). bwtk is otherwise a fairly lightweight program.
+GBs of memory for larger files). Therefore, expect any subcommand which involves creating new bigWig files to take up a decent chunk of memory. bwtk is otherwise a fairly lightweight and fast program, needing only a few MBs of memory for the remaining subcommands.
 
 bwtk mostly reimplements some of the existing functionality from the original UCSC tools, with a few additions and improvements:
 
