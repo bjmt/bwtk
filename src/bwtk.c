@@ -29,7 +29,7 @@
 #include "kseq.h"
 #include "khash.h"
 
-#define BWTK_VERSION "1.5.2"
+#define BWTK_VERSION "1.5.3"
 #define BWTK_YEAR "2025"
 
 // common ----------------------------------------------------------------------
@@ -1046,7 +1046,7 @@ static void help_chromsizes(void) {
 
 static int chromsizes(int argc, char **argv) {
     if (argc == 1) {
-        fprintf(stderr, "[E::chroms] No arguments provided, use -h for usage\n");
+        fprintf(stderr, "[E::chroms] No arguments provided\n");
         help_chromsizes();
         return EXIT_FAILURE;
     }
@@ -1199,7 +1199,7 @@ static int addConsensusChromsToBw(bigWigFile_t **bw_in, const int n_bw, bigWigFi
 
 static int merge(int argc, char **argv) {
     if (argc == 1) {
-        fprintf(stderr, "[E::merge] No arguments provided, use -h for usage\n");
+        fprintf(stderr, "[E::merge] No arguments provided\n");
         help_merge();
         return EXIT_FAILURE;
     }
@@ -1494,7 +1494,7 @@ static chromSizes_t *chromSizesFromPreset(const char *preset, const bool ucsc) {
 
 static int bg2bw(int argc, char **argv) {
     if (argc == 1) {
-        fprintf(stderr, "[E::bg2bw] No arguments provided, use -h for usage\n");
+        fprintf(stderr, "[E::bg2bw] No arguments provided\n");
         help_bg2bw();
         return EXIT_FAILURE;
     }
