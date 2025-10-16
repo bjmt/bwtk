@@ -62,7 +62,7 @@ $ du -h atac*
 328M    atac.bw
 ```
 
-382 MB is a fairly typical size for an Arabidopsis genome-wide compressed bedGraph file, if perhaps on the larger side. Converting to bigWig doesn't give us much space savings, but it does make loading into IGV and other applications must faster. However there is a trick we can use to substantially reduce the file size: binning.
+382 MB is a fairly typical size for an Arabidopsis genome-wide compressed bedGraph file, if perhaps on the larger side. Converting to bigWig doesn't give us much space savings, but it does make loading into IGV and other applications much faster. However there is a trick we can use to substantially reduce the file size: binning.
 
 First, let's get an idea of the basic properties of the data by getting some chromosome-level statistics:
 
