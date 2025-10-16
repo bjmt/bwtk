@@ -91,8 +91,8 @@ $ du -h atac*
 As you can see, this give us an impressive 37X size reduction over the original bigWig! However, rounding to the nearest integer may not be giving us sufficient resolution. Before we check how it looks in a genome browser, we can try a couple of smaller bin sizes:
 
 ```sh
-$ bw adjust -i atac.bw -s 0.5 -o atac.s05.bw
-$ bw adjust -i atac.bw -s 0.1 -o atac.s01.bw
+$ bwtk adjust -i atac.bw -s 0.5 -o atac.s05.bw
+$ bwtk adjust -i atac.bw -s 0.1 -o atac.s01.bw
 $ du -h atac*
 382M    atac.bedGraph.gz
 328M    atac.bw
