@@ -29,7 +29,7 @@
 #include "kseq.h"
 #include "khash.h"
 
-#define BWTK_VERSION "1.5.1"
+#define BWTK_VERSION "1.5.2"
 #define BWTK_YEAR "2025"
 
 // common ----------------------------------------------------------------------
@@ -158,7 +158,7 @@ static bed_t *readBED(const char *fn, const bool constant_size, const uint32_t s
         fprintf(stderr, "[E::readBED] Out of memory\n");
         return NULL;
     }
-    fp = gzopen(fn, "r");
+    fp = strcmp(fn, "-")? gzopen(fn, "r") : gzdopen(fileno(stdin), "r");
     if (fp == 0) {
         fprintf(stderr, "[E::readBED] Unable to open BED file (-b)\n");
         return NULL;
@@ -421,7 +421,7 @@ static void help_adjust(void) {
         "    -i    Input bigWig file\n"
         "    -o    Output bigWig file\n"
         "    -B    Output as bedGraph.gz ('-o-' for ungzipped stdout)\n"
-        "    -b    Subset to ranges in a BED file\n"
+        "    -b    Subset to ranges in a BED file ('-' for stdin)\n"
         "    -a    Add this value to scores [0]\n"
         "    -m    Multiply scores by this value [1]\n"
         "    -l    log10-transform scores\n"
@@ -700,7 +700,7 @@ static void help_score(void) {
         "bwtk score [options] -i <file.bw> -o <scores.tsv>\n"
         "    -i    Input bigWig\n"
         "    -o    Output scores in TSV format (use '-' for stdout)\n"
-        "    -b    BED file of ranges to score (otherwise scores chromosomes)\n"
+        "    -b    BED file to score, otherwise scores chromosomes ('-' for stdin)\n"
         "    -h    Print this message and exit\n"
         , BWTK_VERSION, BWTK_YEAR
     );
@@ -867,7 +867,7 @@ static void help_values(void) {
         "bwtk v%s  Copyright (C) %s  Benjamin Jean-Marie Tremblay\n"
         "bwtk values [options] -i <file.bw> -b <ranges.bed> -o <values.tsv>\n"
         "    -i    Input bigWig\n"
-        "    -b    BED file with ranges to extract values from\n"
+        "    -b    BED file with ranges to extract values from ('-' for stdin)\n"
         "    -o    Output values in TSV format (use '-' for stdout)\n"
         "    -s    Desired size of ranges, will be resized from the centre\n"
         "    -l    Resize ranges from the left with -s (based on strand)\n"
@@ -1437,7 +1437,7 @@ static chromSizes_t *readChromSizes(gzFile cs) {
         if (ks_len == 0) continue;
         char *ref = str.s;
         while (*ref && isspace(*ref)) ref++;
-        if (*ref == 0 || *ref == '#') continue;
+        if (*ref == 0 || *ref == '#') continue; // TODO: Maybe some sequences can start with #?
         char chr[CHROMNAME_SIZE];
         uint32_t size;
         int num = sscanf(ref, "%s %"SCNu32, chr, &size);
