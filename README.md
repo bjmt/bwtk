@@ -78,7 +78,7 @@ Mt	366924	0	0	0	0	0	0
 Pt	154478	0	0	0	0	0	0
 ```
 
-From these results, we can make a couple of guesses: the background signal is likely around 1, and the values in peak regions ranges from 1 to 40. We first try using a very rough binning, such as round to the nearest integer:
+From these results, we can make a couple of guesses: the background signal is likely around 1, and the values in peak regions ranges from 1 to 40. We first try using a very rough binning, such as rounding to the nearest integer:
 
 ```sh
 $ bwtk adjust -i atac.bw -s 1 -o atac.s1.bw
@@ -101,7 +101,7 @@ $ du -h atac*
 8.7M    atac_s1.bw
 ```
 
-Obviously, using smaller bin sizes gives us smaller bigWigs. Still, we get an over 5X size reduction for our smallest bin size. But let's compare:
+Obviously, using smaller bin sizes gives us larger bigWigs. Still, we get an over 5X size reduction for our smallest bin size. But let's compare:
 
 <img src="igv1.png" width="75%" />
 
@@ -113,5 +113,5 @@ The bin size of 0.5 still looks quite good considering the 23X size reduction! H
 
 <img src="igv3.png" width="75%" />
 
-Now, in this very close up shot of some very small peaks we can finally see the blockiness effect of the smallest bin size, though we can still see all of the peak shape details!
+Now, in this very close up shot of some very small peaks we can finally see the blockiness effect of the smallest bin size, though we can still see all of the peak shape details! Obviously the decision of which bin size to use will depend on the distribution of values in the bigWig, as well as the desired scale we would like to visualize the data.
 
