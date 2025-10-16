@@ -103,15 +103,15 @@ $ du -h atac*
 
 Obviously, using smaller bin sizes gives us larger bigWigs. Still, we get an over 5X size reduction for our smallest bin size. But let's compare:
 
-<img src="igv1.png" width="75%" />
+<img src="igv1.png" width="100%" />
 
 Zooming out to a 100 kb view, we can see all of the peaks are still distinct at all bin sizes. However, there is clear strong blockiness at the coarsest bin size of 1 which is rather visually unappealing. Things look a bit better at 0.5. Let's try zooming in a bit more:
 
-<img src="igv2.png" width="75%" />
+<img src="igv2.png" width="100%" />
 
 The bin size of 0.5 still looks quite good considering the 23X size reduction! However, there is a little bit of blockiness in the peak shapes. The bin size of 0.1 on the other hand is still nearly indistinguishable from the original track. Let's zoom in once more:
 
-<img src="igv3.png" width="75%" />
+<img src="igv3.png" width="100%" />
 
 Now, in this very close up shot of some very small peaks we can finally see the blockiness effect of the smallest bin size, though we can still see all of the peak shape details! Obviously the decision of which bin size to use will depend on the distribution of values in the bigWig, as well as the desired scale we would like to visualize the data.
 
