@@ -16,11 +16,12 @@ GBs of memory for larger files). Therefore, expect any subcommand which involves
 
 bwtk mostly reimplements some of the existing functionality from the original UCSC tools, with a few additions and improvements:
 
-- bedGraph files can be gzipped when converting to bigWig (`bg2bw`)
-- Multiple bigWigs can be averaged/summed/min'd/max'd together (`merge`)
-- Retrieval of single-base resolution data from BED ranges (`values`)
-- Subsetting of bigWigs (`subset`)
-- Value transformations such as addition, multiplication, log10 (`adjust`)
+- bedGraph files can be gzipped when converting to bigWig
+- Multiple bigWigs can be averaged/summed/min'd/max'd together
+- Retrieval of single-base resolution data from BED ranges
+- Subsetting of bigWigs
+- Value operations such as addition, multiplication, log10 transformation
+- Binning of bigWig values and collapsing of any resulting sequential ranges with identical values, leading to substantially smaller file sizes depending on the bin step value
 
 ## Installation
 
@@ -35,17 +36,27 @@ make release
 bwtk v1.4.0  Copyright (C) 2025  Benjamin Jean-Marie Tremblay
 Usage:  bwtk <subcommand> [options]
 Available subcommands:
-    bw2bg      Convert a bigWig file to bedGraph
     bg2bw      Convert a bedGraph file to bigWig
+    adjust     Perform an operation on a bigWig
     merge      Average multiple bigWig files together
     values     Return bigWig values from overlapping BED ranges
     score      Get summary scores of bigWig values from BED ranges
-    subset     Subset a bigWig using a BED file
     chroms     Print a chrom.sizes file from a bigWig header
-    adjust     Perform an operation on bigWig values
     help       Print this message and exit
     version    Print the version number and exit
 For subcommand usage, try: bwtk <subcommand> -h
 ```
+
+## File transformations
+
+- `bg2bw`: one bedGraph -> [optional operation] -> one bigWig
+- `adjust`: one bigWig -> [optional operation] -> one bigWig (or bedGraph)
+- `merge`: Multiple bigWigs -> [merge values] -> [optional operation] -> one bigWig
+
+## Data extraction
+
+- `values`: Extract single base-resolution range scores
+- `score`: Calculate summary information of range scores
+- `chroms`: Retrieve chromosome names and sizes
 
 
