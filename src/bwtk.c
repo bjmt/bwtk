@@ -29,7 +29,7 @@
 #include "kseq.h"
 #include "khash.h"
 
-#define BWTK_VERSION "1.5.0"
+#define BWTK_VERSION "1.5.1"
 #define BWTK_YEAR "2025"
 
 // common ----------------------------------------------------------------------
@@ -1355,17 +1355,19 @@ static int merge(int argc, char **argv) {
         }
         ranges->times_added = 0;
         for (uint32_t j = 0; j < bw_out->cl->len[i]; j++) {
+            values[j] += add;
+            values[j] *= mult;
+            if (do_log10) values[j] = log10f(values[j]);
+            if (use_trim) values[j] = min(trim, values[j]);
+            if (step != 0) values[j] = roundf(values[j] / step) * step;
+        }
+        for (uint32_t j = 0; j < bw_out->cl->len[i]; j++) {
             if (ranges->n == ranges->m) {
                 addBwInterval(bw_out, ranges);
             }
             ranges->chrom[ranges->n] = bw_out->cl->chrom[i];
             ranges->start[ranges->n] = j;
             ranges->val[ranges->n] = values[j];
-            ranges->val[ranges->n] += add;
-            ranges->val[ranges->n] *= mult;
-            if (do_log10) ranges->val[ranges->n] = log10f(ranges->val[ranges->n]);
-            if (use_trim) ranges->val[ranges->n] = min(trim, ranges->val[ranges->n]);
-            if (step != 0) ranges->val[ranges->n] = roundf(ranges->val[ranges->n] / step) * step;
             while (j + 1 < bw_out->cl->len[i] && values[j + 1] == values[j]) j++;
             ranges->end[ranges->n++] = j + 1;
         }
