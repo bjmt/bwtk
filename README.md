@@ -32,31 +32,86 @@ make release
 
 ## Quick start
 
-```
-bwtk v1.5.1  Copyright (C) 2025  Benjamin Jean-Marie Tremblay
-Usage:  bwtk <subcommand> [options]
-Available subcommands:
-    bg2bw      Convert a bedGraph file to bigWig
-    adjust     Perform an operation on a bigWig
-    merge      Average multiple bigWig files together
-    values     Return bigWig values from overlapping BED ranges
-    score      Get summary scores of bigWig values from BED ranges
-    chroms     Print a chrom.sizes file from a bigWig header
-    help       Print this message and exit
-    version    Print the version number and exit
-For subcommand usage, try: bwtk <subcommand> -h
-```
-
-## File transformations
+### File transformations
 
 - `bg2bw`: one bedGraph -> [optional operation] -> one bigWig
 - `adjust`: one bigWig -> [optional operation] -> one bigWig (or bedGraph)
 - `merge`: Multiple bigWigs -> [merge values] -> [optional operation] -> one bigWig
 
-## Data extraction
+### Data extraction
 
 - `values`: Extract single base-resolution range scores
 - `score`: Calculate summary information of range scores
 - `chroms`: Retrieve chromosome names and sizes
 
+## Example usage: converting a bedGraph and reducing the file size
+
+Let us consider a theoretical Arabidopsis ATAC-seq sample, starting from a compressed bedGraph:
+
+```
+$ du -h atac.bedGraph.gz
+382M    atac.bedGraph.gz
+```
+
+To start, we can first convert to bigWig.
+
+```sh
+$ bwtk bg2bw -i atac.bedGraph.gz -g chrom.sizes -o atac.bw
+$ du -h atac*
+382M    atac.bedGraph.gz
+328M    atac.bw
+```
+
+382 MB is a fairly typical size for an Arabidopsis genome-wide compressed bedGraph file, if perhaps on the larger side. Converting to bigWig doesn't give us much space savings, but it does make loading into IGV and other applications must faster. However there is a trick we can use to substantially reduce the file size: binning.
+
+First, let's get an idea of the basic properties of the data by getting some chromosome-level statistics:
+
+```sh
+$ bwtk score -i atac.bw -o-
+name	size	covered	sum	mean0	mean	min	max
+1	30427671	28792570	3.97622e+07	1.30678	1.38099	0.006472	43.6019
+2	19698289	19260767	2.35234e+07	1.19419	1.22131	0.006472	44.2038
+3	23459830	22963063	2.96944e+07	1.26576	1.29314	0.006472	40.5665
+4	18585056	18154827	2.34319e+07	1.26079	1.29067	0.006472	40.7154
+5	26975502	26081099	3.45877e+07	1.28219	1.32616	0.006472	42.9223
+Mt	366924	0	0	0	0	0	0
+Pt	154478	0	0	0	0	0	0
+```
+
+From these results, we can make a couple of guesses: the background signal is likely around 1, and the values in peak regions ranges from 1 to 40. We first try using a very rough binning, such as round to the nearest integer:
+
+```sh
+$ bwtk adjust -i atac.bw -s 1 -o atac.s1.bw
+$ du -h atac*
+382M    atac.bedGraph.gz
+328M    atac.bw
+8.7M    atac.s1.bw
+```
+
+As you can see, this give us an impressive 37X size reduction over the original bigWig! However, rounding to the nearest integer may not be giving us sufficient resolution. Before we check how it looks in a genome browser, we can try a couple of smaller bin sizes:
+
+```sh
+$ bw adjust -i atac.bw -s 0.5 -o atac.s05.bw
+$ bw adjust -i atac.bw -s 0.1 -o atac.s01.bw
+$ du -h atac*
+382M    atac.bedGraph.gz
+328M    atac.bw
+59M     atac_s01.bw
+14M     atac_s05.bw
+8.7M    atac_s1.bw
+```
+
+Obviously, using smaller bin sizes gives us smaller bigWigs. Still, we get an over 5X size reduction for our smallest bin size. But let's compare:
+
+<img src="igv1.png" width="75%" />
+
+Zooming out to a 100 kb view, we can see all of the peaks are still distinct at all bin sizes. However, there is clear strong blockiness at the coarsest bin size of 1 which is rather visually unappealing. Things look a bit better at 0.5. Let's try zooming in a bit more:
+
+<img src="igv2.png" width="75%" />
+
+The bin size of 0.5 still looks quite good considering the 23X size reduction! However, there is a little bit of blockiness in the peak shapes. The bin size of 0.1 on the other hand is still nearly indistinguishable from the original track. Let's zoom in once more:
+
+<img src="igv3.png" width="75%" />
+
+Now, in this very close up shot of some very small peaks we can finally see the blockiness effect of the smallest bin size, though we can still see all of the peak shape details!
 
