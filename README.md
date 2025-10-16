@@ -78,7 +78,7 @@ Mt	366924	0	0	0	0	0	0
 Pt	154478	0	0	0	0	0	0
 ```
 
-From these results, we can make a couple of guesses: the background signal is likely around 1, and the values in peak regions ranges from 1 to 40. We first try using a very rough binning, such as rounding to the nearest integer:
+From these results, we can make a couple of guesses: the background signal is likely around 1, and the values in peak regions range from 1 to 40. We can first try using a very rough binning, such as rounding to the nearest integer:
 
 ```sh
 $ bwtk adjust -i atac.bw -s 1 -o atac.s1.bw
