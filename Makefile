@@ -15,9 +15,10 @@
 #   along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 CC ?=cc
-# CFLAGS +=
-LDLIBS +=-lm # -lz
-# LDFLAGS +=
+CFLAGS +=-std=c99
+LDLIBS +=-lm
+PREFIX  ?=/usr/local
+BINDIR  ?=bin
 
 ZLIBDIR ?=libs/zlib
 ZLIB :=$(ZLIBDIR)/libz.a
@@ -25,11 +26,25 @@ ZLIB :=$(ZLIBDIR)/libz.a
 LIBBWDIR ?=libs/libBigWig
 LIBBW :=$(LIBBWDIR)/libBigWig.a
 
+ifeq ($(z_dyn),)
+	LDLIBS+=$(ZLIB)
+else
+	LDLIBS+=-lz
+endif
+
+ifeq ($(bw_dyn),)
+	LDLIBS+=$(LIBBW)
+else
+	LDLIBS+=-lBigWig
+endif
+
 debug: CFLAGS+=-g3 -Og -Wall -Wextra -Wdouble-promotion -Wno-sign-compare \
 	-fsanitize=address,undefined -fno-omit-frame-pointer -Wno-unused-function
+debug: LDFLAGS+=-g3 -Og
 debug: bwtk
 
 release: CFLAGS+=-O3
+release: LDFLAGS+=-O3
 release: bwtk
 
 libz/libz.a:
@@ -53,5 +68,11 @@ clean/bwtk:
 	-rm -f src/*.o
 
 bwtk: src/bwtk.o
-	$(CC) $(CFLAGS) $(LDFLAGS) $(objects) -o $@ $(LIBBW) $(ZLIB) $(LDLIBS)
+	$(CC) $(LDFLAGS) $(objects) -o $@ $(LDLIBS)
+
+install: bwtk
+	install -p ./bwtk $(PREFIX)/$(BINDIR)
+
+uninstall:
+	-rm -f $(PREFIX)/$(BINDIR)/bwtk
 

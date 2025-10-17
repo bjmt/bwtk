@@ -25,10 +25,18 @@ bwtk mostly reimplements some of the existing functionality from the original UC
 
 ## Installation
 
+bwtk has two dependencies: [Zlib](http://zlib.net) and [libBigWig](https://github.com/dpryan79/libBigWig). There are two way to properly link these into bwtk: build pre-bundled versions of the dependencies (in `libs/`) and statically link them into bwtk during compilation, or dynamically link bwtk with system-wide versions of the dependencies.
+
 ```sh
+# Install by statically linking the pre-bundled dependencies:
 make libz libBigWig
 make release
+
+# Install by dynamically linking system-wide dependencies:
+make z_dyn=1 bw_dyn=1 release
 ```
+
+Please note that the pre-bundled libBigWig comes with curl functionality disabled. If you need to be able to run bwtk on remote files, please link your own version of libBigWig dynamically.
 
 ## Quick start
 
