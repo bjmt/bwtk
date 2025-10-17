@@ -26,17 +26,17 @@ ZLIB :=$(ZLIBDIR)/libz.a
 LIBBWDIR ?=libs/libBigWig
 LIBBW :=$(LIBBWDIR)/libBigWig.a
 
-ifeq ($(z_dyn),)
-	LDLIBS+=$(ZLIB)
-else
-	LDLIBS+=-lz
-endif
-
 ifeq ($(bw_dyn),)
 	CFLAGS+=-DNOCURL
 	LDLIBS+=$(LIBBW)
 else
 	LDLIBS+=-lBigWig
+endif
+
+ifeq ($(z_dyn),)
+	LDLIBS+=$(ZLIB)
+else
+	LDLIBS+=-lz
 endif
 
 debug: CFLAGS+=-g3 -Og -Wall -Wextra -Wdouble-promotion -Wno-sign-compare \
