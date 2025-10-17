@@ -953,7 +953,9 @@ static int score(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    fputs("name\tsize\tcovered\tsum\tmean0\tmean\tmin\tmax\n", fout);
+    if (bedStat == NONE) {
+        fputs("name\tsize\tcovered\tsum\tmean0\tmean\tmin\tmax\n", fout);
+    }
 
     int64_t nranges = 0;
     uint32_t bed_start, bed_end, start, end;
