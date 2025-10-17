@@ -830,10 +830,22 @@ static void help_score(void) {
         "    -i    Input bigWig\n"
         "    -o    Output scores in TSV format (use '-' for stdout)\n"
         "    -b    BED file to score, otherwise scores chromosomes ('-' for stdin)\n"
+        "    -B    Return a BED instead with this stat in the score column\n"
         "    -h    Print this message and exit\n"
         , BWTK_VERSION, BWTK_YEAR
     );
 }
+
+enum BWSTAT {
+    NONE,
+    SIZE,
+    COVERED,
+    SUM,
+    MEAN0,
+    MEAN,
+    MIN,
+    MAX,
+};
 
 static int score(int argc, char **argv) {
     if (argc == 1) {
@@ -845,12 +857,13 @@ static int score(int argc, char **argv) {
         fprintf(stderr, "[E::score] Unable to init curl buffer\n");
         return EXIT_FAILURE;
     }
-    char *bedfn = NULL;
+    char *bedfn = NULL, *bedStatString = NULL;
+    enum BWSTAT bedStat = NONE;
     bed_t *bed;
     bigWigFile_t *bw = NULL;
     FILE *fout = NULL;
     int opt;
-    while ((opt = getopt(argc, argv, "i:b:o:ch")) != -1) {
+    while ((opt = getopt(argc, argv, "i:b:o:B:h")) != -1) {
         switch (opt) {
             case 'i':
                 if (!bwIsBigWig(optarg, NULL)) {
@@ -873,11 +886,35 @@ static int score(int argc, char **argv) {
                     return EXIT_FAILURE;
                 }
                 break;
+            case 'B':
+                bedStatString = optarg;
+                break;
             case 'h':
                 help_score();
                 return EXIT_SUCCESS;
             default:
                 return EXIT_FAILURE;
+        }
+    }
+    if (bedStatString != NULL) {
+        if (strcmp(bedStatString, "size") == 0) {
+            bedStat = SIZE;
+        } else if (strcmp(bedStatString, "covered") == 0) {
+            bedStat = COVERED;
+        } else if (strcmp(bedStatString, "sum") == 0) {
+            bedStat = SUM;
+        } else if (strcmp(bedStatString, "mean0") == 0) {
+            bedStat = MEAN0;
+        } else if (strcmp(bedStatString, "mean") == 0) {
+            bedStat = MEAN;
+        } else if (strcmp(bedStatString, "min") == 0) {
+            bedStat = MIN;
+        } else if (strcmp(bedStatString, "max") == 0) {
+            bedStat = MAX;
+        } else {
+            fprintf(stderr, "[E::score] Unknown stat '%s': expected one of\n", bedStatString);
+            fprintf(stderr, "[E::score]   covered, sum, mean0, mean, min, max\n");
+            return EXIT_FAILURE;
         }
     }
     if (bw == NULL) {
@@ -967,7 +1004,32 @@ static int score(int argc, char **argv) {
                     mean = sum / (double) covered;
                     mean0 = sum / (double) size;
                 }
-                fprintf(fout, "%s\t%u\t%u\t%g\t%g\t%g\t%g\t%g\n", bed->names[b->a[j].namei], size, covered, sum, mean0, mean, min_val, max_val);
+                switch (bedStat) {
+                    case NONE:
+                        fprintf(fout, "%s\t%u\t%u\t%g\t%g\t%g\t%g\t%g\n", bed->names[b->a[j].namei], size, covered, sum, mean0, mean, min_val, max_val);
+                        break;
+                    case SIZE:
+                        fprintf(fout, "%s\t%u\t%u\t%s\t%u\t%c\n", chromName, bed_start, bed_end, bed->names[b->a[j].namei], size, b->a[j].strand);
+                        break;
+                    case COVERED:
+                        fprintf(fout, "%s\t%u\t%u\t%s\t%u\t%c\n", chromName, bed_start, bed_end, bed->names[b->a[j].namei], covered, b->a[j].strand);
+                        break;
+                    case SUM:
+                        fprintf(fout, "%s\t%u\t%u\t%s\t%g\t%c\n", chromName, bed_start, bed_end, bed->names[b->a[j].namei], sum, b->a[j].strand);
+                        break;
+                    case MEAN0:
+                        fprintf(fout, "%s\t%u\t%u\t%s\t%g\t%c\n", chromName, bed_start, bed_end, bed->names[b->a[j].namei], mean0, b->a[j].strand);
+                        break;
+                    case MEAN:
+                        fprintf(fout, "%s\t%u\t%u\t%s\t%g\t%c\n", chromName, bed_start, bed_end, bed->names[b->a[j].namei], mean, b->a[j].strand);
+                        break;
+                    case MIN:
+                        fprintf(fout, "%s\t%u\t%u\t%s\t%g\t%c\n", chromName, bed_start, bed_end, bed->names[b->a[j].namei], min_val, b->a[j].strand);
+                        break;
+                    case MAX:
+                        fprintf(fout, "%s\t%u\t%u\t%s\t%g\t%c\n", chromName, bed_start, bed_end, bed->names[b->a[j].namei], max_val, b->a[j].strand);
+                        break;
+                }
                 bwIteratorDestroy(bwVals);
             }
         }
