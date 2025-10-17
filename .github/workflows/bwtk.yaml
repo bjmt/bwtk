@@ -1,0 +1,27 @@
+name: bwtk-build
+on: push
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    if: contains(github.event.head_commit.message, 'build_me')
+    steps:
+      - name: clone
+        uses: actions/checkout@v4
+      - name: build
+        run: make libz libBigWig && make release
+      - name: test
+        run: ./bwtk version
+  ubuntu:
+    strategy:
+      matrix:
+        cc: [gcc, clang]
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, 'build_me')
+    steps:
+      - name: clone
+        uses: actions/checkout@v4
+      - name: build
+        run: make libz libBigWig && make release
+      - name: test
+        run: ./bwtk version
