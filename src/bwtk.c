@@ -29,7 +29,7 @@
 #include "kseq.h"
 #include "khash.h"
 
-#define BWTK_VERSION "1.7.0"
+#define BWTK_VERSION "1.8.0"
 #define BWTK_YEAR "2025"
 
 // common ----------------------------------------------------------------------
@@ -86,11 +86,20 @@ static void *calloc_or_die(size_t size, const char *func_name) {
 #define ALL 0
 #define FILTERED 1
 
+#define CHROMSIZES_MEM   128
+#define CHROMNAME_SIZE  1024
+
 typedef struct {
     int m, n;
     char **chroms;
     uint32_t *sizes;
 } chromSizes_t;
+
+static void initChromSizes(chromSizes_t *cs, const int m) {
+    cs->m = m;
+    cs->chroms = alloc(sizeof(char *) * cs->m);
+    cs->sizes = alloc(sizeof(uint32_t) * cs->m);
+}
 
 #define RANGES_MEM      8192
 
@@ -1310,6 +1319,7 @@ static void help_merge(void) {
         "bwtk v%s  Copyright (C) %s  Benjamin Jean-Marie Tremblay\n"
         "bwtk merge [options] -o <out.bw> <file1.bw> <file2.bw> [...]\n"
         "    -o    Output bigWig\n"
+        "    -B    Output as bedGraph.gz ('-o-' for ungzipped stdout)\n"
         "    -S    Sum values instead of averaging\n"
         "    -M    Take the max value instead of averaging\n"
         "    -n    Take the min value instead of averaging\n"
@@ -1326,7 +1336,7 @@ static void help_merge(void) {
 
 #define BW_MERGE_CHUNK_SIZE 1000000
 
-static int addConsensusChromsToBw(bigWigFile_t **bw_in, const int n_bw, bigWigFile_t *bw_out) {
+static int addConsensusChromsToCs(bigWigFile_t **bw_in, const int n_bw, chromSizes_t *cs) {
     khash_t(str_m) *conChroms = kh_init(str_m);
     khint64_t k;
     int absent;
@@ -1371,26 +1381,17 @@ static int addConsensusChromsToBw(bigWigFile_t **bw_in, const int n_bw, bigWigFi
     if (final_chroms < total_chroms) {
         fprintf(stderr, "[W::addConsensusChroms] Found %d possible chromosomes, but only %d are present in all bigWigs\n", total_chroms, final_chroms);
     }
-    char **chromNames = alloc(sizeof(char *) * final_chroms);
-    uint32_t *chromLens = alloc(sizeof(uint32_t) * final_chroms);
+    cs->m = cs->n = final_chroms;
+    cs->chroms = alloc(sizeof(char *) * cs->m);
+    cs->sizes = alloc(sizeof(uint32_t) * cs->m);
     int chrom_i = 0;
     for (k = kh_begin(conChroms); k!= kh_end(conChroms); k++) {
         if (kh_exist(conChroms, k) && kh_val(conChroms, k).x == (int64_t) n_bw) {
-            chromNames[chrom_i] = strdup(kh_key(conChroms, k));
-            chromLens[chrom_i++] = (uint32_t) kh_val(conChroms, k).y;
+            cs->chroms[chrom_i] = strdup(kh_key(conChroms, k));
+            cs->sizes[chrom_i++] = (uint32_t) kh_val(conChroms, k).y;
         }
     }
-    bw_out->cl = bwCreateChromList((const char * const *)chromNames, chromLens, final_chroms);
-    if (!bw_out->cl) {
-        fprintf(stderr, "[E::merge] Failed to create output bigWig chrom list\n");
-        return EXIT_FAILURE;
-    }
     kh_destroy(str_m, conChroms);
-    free(chromLens);
-    for (int i = 0; i < final_chroms; i++) {
-        free(chromNames[i]);
-    }
-    free(chromNames);
     return 0;
 }
 
@@ -1404,20 +1405,20 @@ static int merge(int argc, char **argv) {
         fprintf(stderr, "[E::merge] Unable to init curl buffer\n");
         return EXIT_FAILURE;
     }
+    char *outfn = NULL;
     int opt, n_bw;
     bigWigFile_t *bw_out = NULL;
     bigWigFile_t **bw_in = NULL;
     float mult = 1.0f, add = 0.0f, step = 1.0f, trim;
-    bool do_log10 = false, use_trim = false;
+    bool do_log10 = false, use_trim = false, tofile = true, bg = false;
     bool sum_only = false, take_max = false, take_min = false;
-    while ((opt = getopt(argc, argv, "o:SMa:m:lt:s:h")) != -1) {
+    while ((opt = getopt(argc, argv, "o:BSMa:m:lt:s:h")) != -1) {
         switch (opt) {
             case 'o':
-                bw_out = bwOpen(optarg, NULL, "w");
-                if (!bw_out) {
-                    fprintf(stderr, "[E::merge] Unable to create output (-o) '%s'\n", optarg);
-                    return EXIT_FAILURE;
-                }
+                outfn = optarg;
+                break;
+            case 'B':
+                bg = true;
                 break;
             case 'S':
                 sum_only = true;
@@ -1474,8 +1475,33 @@ static int merge(int argc, char **argv) {
         fprintf(stderr, "[E::merge] Use only one of -s, -M and -n\n");
         return EXIT_FAILURE;
     }
-    if (bw_out == NULL) {
-        fprintf(stderr, "[E::merge] Missing output (-o)\n");
+    if (outfn != NULL) {
+        if (bg) {
+            fout.f = NULL;
+            if (strcmp(outfn, "-") == 0) {
+                tofile = false;
+                fout.f = fdopen(1, "w");
+                if (fout.f == NULL) {
+                    fprintf(stderr, "[E::merge] Failed to fdopen stdout: %s\n", strerror(errno));
+                    return EXIT_FAILURE;
+                }
+            } else {
+                fout.gz = gzopen(outfn, "wb");
+                if (fout.gz == NULL) {
+                    int e;
+                    fprintf(stderr, "[E::merge] Failed to open file '%s': %s\n", outfn, gzerror(fout.gz, &e));
+                    return EXIT_FAILURE;
+                }
+            }
+        } else {
+            bw_out = bwOpen(outfn, NULL, "w");
+            if (!bw_out) {
+                fprintf(stderr, "[E::merge] Unable to create output (-o) '%s'\n", outfn);
+                return EXIT_FAILURE;
+            }
+        }
+    } else {
+        fprintf(stderr, "[E::merge] Missing -o\n");
         return EXIT_FAILURE;
     }
     if (optind == argc) {
@@ -1499,16 +1525,24 @@ static int merge(int argc, char **argv) {
             return EXIT_FAILURE;
         }
     }
-    if (bwCreateHdr(bw_out, 10)) {
-        fprintf(stderr, "[E::merge] Failed to init output bigWig header\n");
+    chromSizes_t *cs = alloc(sizeof(chromSizes_t));
+    if (addConsensusChromsToCs(bw_in, n_bw, cs)) {
         return EXIT_FAILURE;
     }
-    if (addConsensusChromsToBw(bw_in, n_bw, bw_out)) {
-        return EXIT_FAILURE;
-    }
-    if (bwWriteHdr(bw_out)) {
-        fprintf(stderr, "[E::merge] Failed to write output bigWig header\n");
-        return EXIT_FAILURE;
+    if (!bg) {
+        if (bwCreateHdr(bw_out, 10)) {
+            fprintf(stderr, "[E::merge] Failed to init output bigWig header\n");
+            return EXIT_FAILURE;
+        }
+        bw_out->cl = bwCreateChromList((const char * const *)cs->chroms, cs->sizes, cs->n);
+        if (!bw_out->cl) {
+            fprintf(stderr, "[E::merge] Failed to create output bigWig chrom list\n");
+            return EXIT_FAILURE;
+        }
+        if (bwWriteHdr(bw_out)) {
+            fprintf(stderr, "[E::merge] Failed to write output bigWig header\n");
+            return EXIT_FAILURE;
+        }
     }
 
     ranges_t *ranges = alloc(sizeof(ranges_t));
@@ -1519,24 +1553,24 @@ static int merge(int argc, char **argv) {
     ranges->val = alloc(sizeof(float) * ranges->m);
 
     bwOverlapIterator_t *bwIt;
-    uint32_t max_len = bw_out->cl->len[0];
-    for (int i = 1; i < bw_out->cl->nKeys; i++) {
-        max_len = max(max_len, bw_out->cl->len[i]);
+    uint32_t max_len = cs->sizes[0];
+    for (int i = 1; i < cs->n; i++) {
+        max_len = max(max_len, cs->sizes[i]);
     }
     const uint32_t chunkSize = min(max_len, BW_MERGE_CHUNK_SIZE);
     float *values = alloc(sizeof(float) * chunkSize);
     uint32_t covBases = 0, chunkStart, chunkEnd;
-    for (int i = 0; i < bw_out->cl->nKeys; i++) {
+    for (int i = 0; i < cs->n; i++) {
         ranges->times_added = ranges->n = 0;
         covBases = 0;
-        while (covBases < bw_out->cl->len[i]) {
+        while (covBases < cs->sizes[i]) {
             memset(values, 0, sizeof(float) * chunkSize);
             chunkStart = covBases;
-            covBases = min(covBases + chunkSize, bw_out->cl->len[i]);
+            covBases = min(covBases + chunkSize, cs->sizes[i]);
             chunkEnd = covBases;
             bool first = true;
             for (int j = 0; j < n_bw; j++) {
-                bwIt = bwOverlappingIntervalsIterator(bw_in[j], bw_out->cl->chrom[i], chunkStart, chunkEnd, BW_ITERATOR_CHUNKS);
+                bwIt = bwOverlappingIntervalsIterator(bw_in[j], cs->chroms[i], chunkStart, chunkEnd, BW_ITERATOR_CHUNKS);
                 if (bwIt == NULL) {
                     fprintf(stderr, "[E::merge] Error traversing bigWig\n");
                     return EXIT_FAILURE;
@@ -1586,9 +1620,13 @@ static int merge(int argc, char **argv) {
                     ranges->end[ranges->n - 1] = chunkStart + j + 1;
                 } else {
                     if (ranges->n == ranges->m) {
-                        addBwInterval(bw_out, ranges);
+                        if (!bg) {
+                            addBwInterval(bw_out, ranges);
+                        } else {
+                            addBgInterval(ranges, tofile);
+                        }
                     }
-                    ranges->chrom[ranges->n] = bw_out->cl->chrom[i];
+                    ranges->chrom[ranges->n] = cs->chroms[i];
                     ranges->start[ranges->n] = chunkStart + j;
                     ranges->val[ranges->n] = values[j];
                     while ((chunkStart + j + 1) < chunkEnd && values[j + 1] == values[j]) j++;
@@ -1597,15 +1635,30 @@ static int merge(int argc, char **argv) {
             }
         }
         if (ranges->n) {
-            addBwInterval(bw_out, ranges);
+            if (!bg) {
+                addBwInterval(bw_out, ranges);
+            } else {
+                addBgInterval(ranges, tofile);
+            }
         }
     }
     free(values);
 
+    if (!bg) {
+        bwClose(bw_out);
+    } else {
+        if (tofile && gzclose (fout.gz) != Z_OK) {
+            int e;
+            fprintf(stderr, "[E::merge] Failed to close output file: %s\n", gzerror(fout.gz, &e));
+            return EXIT_FAILURE;
+        } else if (!tofile && fclose(fout.f) != 0) {
+            fprintf(stderr, "[E::merge] Failed to close output stream: %s\n", strerror(errno));
+            return EXIT_FAILURE;
+        }
+    }
     for (int i = 0; i < n_bw; i++) {
         bwClose(bw_in[i]);
     }
-    bwClose(bw_out);
     bwCleanup();
     return EXIT_SUCCESS;
 
@@ -1613,8 +1666,6 @@ static int merge(int argc, char **argv) {
 
 // bg2bw -----------------------------------------------------------------------
 
-#define CHROMSIZES_MEM   128
-#define CHROMNAME_SIZE  1024
 #define PRESET_GENOMES  "tair10"
 
 static void help_bg2bw(void) {
@@ -1636,12 +1687,6 @@ static void help_bg2bw(void) {
         "Order of operations: a -> m -> l -> t -> s\n"
         , BWTK_VERSION, BWTK_YEAR, PRESET_GENOMES
     );
-}
-
-static void initChromSizes(chromSizes_t *cs, const int m) {
-    cs->m = m;
-    cs->chroms = alloc(sizeof(char *) * cs->m);
-    cs->sizes = alloc(sizeof(uint32_t) * cs->m);
 }
 
 static chromSizes_t *readChromSizes(gzFile cs) {
