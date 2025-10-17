@@ -453,7 +453,7 @@ static inline uint64_t pushDigit(uint64_t i, char c) {
     return 10 * i + digit;
 }
 
-uint32_t parseDecimal(const char *str, char **strend) {
+static uint32_t parseDecimal(const char *str, char **strend) {
     uint64_t n = 0;
     int digits = 0, decimals = 0, e = 0, lost = 0;
     char sign = '+', esign = '+';
