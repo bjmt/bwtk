@@ -15,7 +15,7 @@
 #   along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 CC ?=cc
-CFLAGS +=-gnu=c99
+CFLAGS +=-std=gnu99
 LDLIBS +=-lm
 PREFIX  ?=/usr/local
 BINDIR  ?=bin
