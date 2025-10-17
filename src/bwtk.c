@@ -1329,7 +1329,7 @@ static void help_merge(void) {
         "    -t    Trim values above this max [Inf]\n"
         "    -s    Step size for binning [0]\n"
         "    -h    Print this message and exit\n"
-        "Order of operations: avg|sum|max -> a -> m -> l -> t -> s\n"
+        "Order of operations: avg|sum|max|min -> a -> m -> l -> t -> s\n"
         , BWTK_VERSION, BWTK_YEAR
     );
 }
