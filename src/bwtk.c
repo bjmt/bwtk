@@ -422,6 +422,7 @@ static void help_adjust(void) {
         "    -o    Output bigWig file\n"
         "    -B    Output as bedGraph.gz ('-o-' for ungzipped stdout)\n"
         "    -b    Subset to ranges in a BED file ('-' for stdin)\n"
+        "    -r    Subset to a single range (chrName:X-Y)\n"
         "    -a    Add this value to scores [0]\n"
         "    -m    Multiply scores by this value [1]\n"
         "    -l    log10-transform scores\n"
@@ -433,7 +434,7 @@ static void help_adjust(void) {
     );
 }
 
-void addBgInterval(ranges_t *ranges, const bool tofile) {
+static void addBgInterval(ranges_t *ranges, const bool tofile) {
     for (int64_t i = 0; i < ranges->n; i++) {
         if (tofile) {
             gzprintf(fout.gz, "%s\t%"PRIu32"\t%"PRIu32"\t%g\n", ranges->chrom[i], ranges->start[i], ranges->end[i], (double) ranges->val[i]);
@@ -442,6 +443,109 @@ void addBgInterval(ranges_t *ranges, const bool tofile) {
         }
     }
     ranges->n = 0;
+}
+
+// Some more code adapted from HTSlib:
+
+static inline uint64_t pushDigit(uint64_t i, char c) {
+    // ensure subtraction occurs first, avoiding overflow for >= MAX-48 or so
+    int digit = c - '0';
+    return 10 * i + digit;
+}
+
+uint32_t parseDecimal(const char *str, char **strend) {
+    uint64_t n = 0;
+    int digits = 0, decimals = 0, e = 0, lost = 0;
+    char sign = '+', esign = '+';
+    const char *s, *str_orig = str;
+
+    while (isspace(*str)) str++;
+    s = str;
+
+    if (*s == '+' || *s == '-') sign = *s++;
+    while (*s)
+        if (isdigit(*s)) digits++, n = pushDigit(n, *s++);
+        else if (*s == ',') s++;
+        else break;
+
+    if (*s == '.') {
+        s++;
+        while (isdigit(*s)) decimals++, digits++, n = pushDigit(n, *s++);
+    }
+
+    switch (*s) {
+        case 'e': case 'E':
+            s++;
+            if (*s == '+' || *s == '-') esign = *s++;
+            while (isdigit(*s)) e = pushDigit(e, *s++);
+            if (esign == '-') e = -e;
+            break;
+
+        case 'k': case 'K': e += 3; s++; break;
+        case 'm': case 'M': e += 6; s++; break;
+        case 'g': case 'G': e += 9; s++; break;
+    }
+
+    e -= decimals;
+    while (e > 0) n *= 10, e--;
+    while (e < 0) lost += n % 10, n /= 10, e++;
+
+    if (lost > 0) {
+        fprintf(stderr, "[E::parseDecimal] Discarding fractional part of %.*s", (int)(s - str), str);
+    }
+
+    if (strend) {
+        // Set to the original input str pointer if not valid number syntax
+        *strend = (digits > 0)? (char *)s : (char *)str_orig;
+    } else if (digits == 0) {
+        fprintf(stderr, "[E::parseDecimal] Invalid numeric value %.8s[truncated]", str);
+    } else if (*s) {
+        fprintf(stderr, "[E::parseDecimal] Ignoring unknown characters after %.*s[%s]", (int)(s - str), str, s);
+    }
+
+    if (n >= 0xFFFFFFFF) {
+        fprintf(stderr, "[E::parseDecimal] Coordinate value exceeds uint32_t limit: %lld\n", n);
+    }
+    return (sign == '+')? n : -n;
+}
+
+static uint32_t parseSingleRange(const char *s, const bigWigFile_t *bw, uint32_t *beg, uint32_t *end) {
+    char *hyphen;
+    char *colon = strrchr(s, ':');
+    uint32_t tid = -1;
+    if (colon == NULL) {
+        tid = bwGetTid(bw, s);
+        if (tid == -1) {
+            fprintf(stderr, "[E::parseSingleRange] Could not find sequence name in bigWig: '%s'\n", s);
+            return -1;
+        }
+        *beg = 0; *end = bw->cl->len[tid];
+        return tid;
+    }
+    *colon = 0;
+    tid = bwGetTid(bw, s);
+    if (tid == -1) {
+        fprintf(stderr, "[E::parseSingleRange] Could not find sequence name in bigWig: '%s'\n", s);
+        return -1;
+    }
+
+    *beg = parseDecimal(colon+1, &hyphen) - 1;
+    if (*beg < 0) *beg = 0;
+
+    if (*hyphen == '\0') {
+        *end = *beg + 1;
+    } else if (*hyphen == '-') {
+        *end = parseDecimal(hyphen+1, NULL);
+    } else {
+        fprintf(stderr, "Unknown separator: '%c'\n", *hyphen);
+        return -1;
+    }
+
+    if (*beg >= *end) {
+        fprintf(stderr, "[E::parseSingleRange] Range start cannot be equal to or greater than end");
+        return -1;
+    }
+    return tid;
 }
 
 static int adjust(int argc, char **argv) {
@@ -454,14 +558,14 @@ static int adjust(int argc, char **argv) {
         fprintf(stderr, "[E::adjust] Unable to init curl buffer\n");
         return EXIT_FAILURE;
     }
-    char *bedfn = NULL, *outfn = NULL;
+    char *bedfn = NULL, *outfn = NULL, *rRange = NULL;
     bed_t *bed;
     bigWigFile_t *bw_in = NULL, *bw_out = NULL;
     bool do_log10 = false, use_trim = false;
     bool bg = false, tofile = true;
     float mult = 1.0f, add = 0.0f, step = 0.0f, trim;
     int opt;
-    while ((opt = getopt(argc, argv, "i:b:o:m:a:lt:s:Bh")) != -1) {
+    while ((opt = getopt(argc, argv, "i:b:r:o:m:a:lt:s:Bh")) != -1) {
         switch (opt) {
             case 'i':
                 if (!bwIsBigWig(optarg, NULL)) {
@@ -476,6 +580,9 @@ static int adjust(int argc, char **argv) {
                 break;
             case 'b':
                 bedfn = optarg;
+                break;
+            case 'r':
+                rRange = optarg;
                 break;
             case 'o':
                 outfn = optarg;
@@ -554,6 +661,10 @@ static int adjust(int argc, char **argv) {
         fprintf(stderr, "[E::adjust] Missing -o\n");
         return EXIT_FAILURE;
     }
+    if (bw_in == NULL) {
+        fprintf(stderr, "[E::adjust] Missing -i\n");
+        return EXIT_FAILURE;
+    }
     if (bedfn != NULL) {
         bed = readBED(bedfn, false, 0, 0, 0);
         if (bed == NULL) return EXIT_FAILURE;
@@ -561,30 +672,48 @@ static int adjust(int argc, char **argv) {
         bed->n = bed_unify(bed->data);
     } else {
         bed = alloc(sizeof(bed_t));
-        bed->n_names = bw_in->cl->nKeys;
-        bed->names = alloc(sizeof(char *) * bed->n_names);
         kh_bedHash_t *h = kh_init(bedHash);
         khint64_t k;
         int ret;
-        for (int64_t i = 0; i < bw_in->cl->nKeys; i++) {
-            bed->names[i] = bw_in->cl->chrom[i];
-            k = kh_put(bedHash, h, bw_in->cl->chrom[i], &ret);
+        if (rRange == NULL) {
+            bed->n_names = bw_in->cl->nKeys;
+            bed->names = alloc(sizeof(char *) * bed->n_names);
+            for (int64_t i = 0; i < bw_in->cl->nKeys; i++) {
+                bed->names[i] = bw_in->cl->chrom[i];
+                k = kh_put(bedHash, h, bw_in->cl->chrom[i], &ret);
+                if (ret == -1) {
+                    fprintf(stderr, "[E::adjust] Failed to create chrom hash table\n");
+                    return EXIT_FAILURE;
+                }
+                bedList_t *p = &kh_val(h, k);
+                p->a = alloc(sizeof(p->a[0]));
+                p->a[0].namei = i;
+                p->a[0].beg = 0;
+                p->a[0].end = bw_in->cl->len[i];
+                p->n = 1;
+            }
+        } else {
+            uint32_t beg, end;
+            uint32_t tid = parseSingleRange(rRange, bw_in, &beg, &end);
+            if (tid == -1) {
+                return EXIT_FAILURE;
+            }
+            bed->n_names = 1;
+            bed->names = alloc(sizeof(char *) * bed->n_names);
+            bed->names[0] = bw_in->cl->chrom[tid];
+            k = kh_put(bedHash, h, bw_in->cl->chrom[tid], &ret);
             if (ret == -1) {
                 fprintf(stderr, "[E::adjust] Failed to create chrom hash table\n");
                 return EXIT_FAILURE;
             }
             bedList_t *p = &kh_val(h, k);
             p->a = alloc(sizeof(p->a[0]));
-            p->a[0].namei = i;
-            p->a[0].beg = 0;
-            p->a[0].end = bw_in->cl->len[i];
+            p->a[0].namei = tid;
+            p->a[0].beg = beg;
+            p->a[0].end = end;
             p->n = 1;
         }
         bed->data = h;
-    }
-    if (bw_in == NULL) {
-        fprintf(stderr, "[E::adjust] Missing -i\n");
-        return EXIT_FAILURE;
     }
 
     if (!bg) {
