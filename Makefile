@@ -33,6 +33,7 @@ else
 endif
 
 ifeq ($(bw_dyn),)
+	CFLAGS+=-DNOCURL
 	LDLIBS+=$(LIBBW)
 else
 	LDLIBS+=-lBigWig
