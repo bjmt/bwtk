@@ -29,7 +29,7 @@
 #include "kseq.h"
 #include "khash.h"
 
-#define BWTK_VERSION "1.6.1"
+#define BWTK_VERSION "1.7.0"
 #define BWTK_YEAR "2025"
 
 // common ----------------------------------------------------------------------
@@ -1306,13 +1306,13 @@ static int chromsizes(int argc, char **argv) {
 // merge -----------------------------------------------------------------------
 
 static void help_merge(void) {
-        /* "    -c    Merge chromosomes in chunks to save memory\n" */
     printf(
         "bwtk v%s  Copyright (C) %s  Benjamin Jean-Marie Tremblay\n"
         "bwtk merge [options] -o <out.bw> <file1.bw> <file2.bw> [...]\n"
         "    -o    Output bigWig\n"
         "    -S    Sum values instead of averaging\n"
         "    -M    Take the max value instead of averaging\n"
+        "    -n    Take the min value instead of averaging\n"
         "    -a    Add this value to scores [0]\n"
         "    -m    Multiply scores by this value [1]\n"
         "    -l    log10-transform scores\n"
@@ -1409,8 +1409,7 @@ static int merge(int argc, char **argv) {
     bigWigFile_t **bw_in = NULL;
     float mult = 1.0f, add = 0.0f, step = 1.0f, trim;
     bool do_log10 = false, use_trim = false;
-    bool sum_only = false, take_max = false;
-    /* bool chunk = false; */
+    bool sum_only = false, take_max = false, take_min = false;
     while ((opt = getopt(argc, argv, "o:SMa:m:lt:s:h")) != -1) {
         switch (opt) {
             case 'o':
@@ -1425,6 +1424,9 @@ static int merge(int argc, char **argv) {
                 break;
             case 'M':
                 take_max = true;
+                break;
+            case 'n':
+                take_min = true;
                 break;
             case 'm':
                 mult = atof(optarg);
@@ -1468,8 +1470,8 @@ static int merge(int argc, char **argv) {
                 return EXIT_FAILURE;
         }
     }
-    if (sum_only && take_max) {
-        fprintf(stderr, "[E::merge] Cannot set both -s and -M\n");
+    if ((sum_only + take_max + take_min) > 1) {
+        fprintf(stderr, "[E::merge] Use only one of -s, -M and -n\n");
         return EXIT_FAILURE;
     }
     if (bw_out == NULL) {
@@ -1521,64 +1523,84 @@ static int merge(int argc, char **argv) {
     for (int i = 1; i < bw_out->cl->nKeys; i++) {
         max_len = max(max_len, bw_out->cl->len[i]);
     }
-    float *values = alloc(sizeof(float) * max_len);
+    const uint32_t chunkSize = min(max_len, BW_MERGE_CHUNK_SIZE);
+    float *values = alloc(sizeof(float) * chunkSize);
+    uint32_t covBases = 0, chunkStart, chunkEnd;
     for (int i = 0; i < bw_out->cl->nKeys; i++) {
-        memset(values, 0, bw_out->cl->len[i] * sizeof(float));
-        for (int j = 0; j < n_bw; j++) {
-            bwIt = bwOverlappingIntervalsIterator(bw_in[j], bw_out->cl->chrom[i], 0, bw_out->cl->len[i], BW_ITERATOR_CHUNKS);
-            if (bwIt == NULL) {
-                fprintf(stderr, "[E::merge] Error traversing bigWig\n");
-                return EXIT_FAILURE;
-            }
-            while (bwIt->data) {
-                for (int64_t h = 0; h < bwIt->intervals->l; h++) {
-                    for (uint32_t m = bwIt->intervals->start[h]; m < bwIt->intervals->end[h]; m++) {
-                        if (take_max) {
-                            values[m] = max(values[m], bwIt->intervals->value[h]);
-                        } else if (sum_only) {
-                            values[m] += bwIt->intervals->value[h];
-                        } else {
-                            values[m] += bwIt->intervals->value[h] / (float) n_bw;
-                        }
-                    }
-                }
-                bwIt = bwIteratorNext(bwIt);
+        ranges->times_added = ranges->n = 0;
+        covBases = 0;
+        while (covBases < bw_out->cl->len[i]) {
+            memset(values, 0, sizeof(float) * chunkSize);
+            chunkStart = covBases;
+            covBases = min(covBases + chunkSize, bw_out->cl->len[i]);
+            chunkEnd = covBases;
+            bool first = true;
+            for (int j = 0; j < n_bw; j++) {
+                bwIt = bwOverlappingIntervalsIterator(bw_in[j], bw_out->cl->chrom[i], chunkStart, chunkEnd, BW_ITERATOR_CHUNKS);
                 if (bwIt == NULL) {
                     fprintf(stderr, "[E::merge] Error traversing bigWig\n");
                     return EXIT_FAILURE;
                 }
+                while (bwIt->data) {
+                    for (int64_t h = 0; h < bwIt->intervals->l; h++) {
+                        const uint32_t intStart = max(bwIt->intervals->start[h], chunkStart);
+                        const uint32_t intEnd = min(bwIt->intervals->end[h], chunkEnd);
+                        for (uint32_t m = intStart; m < intEnd; m++) {
+                            if (take_max) {
+                                if (first) {
+                                    values[m - chunkStart] = bwIt->intervals->value[h];
+                                } else {
+                                    values[m - chunkStart] = max(values[m - chunkStart], bwIt->intervals->value[h]);
+                                }
+                            } else if (take_min) {
+                                if (first) {
+                                    values[m - chunkStart] = min(values[m - chunkStart], bwIt->intervals->value[h]);
+                                } else {
+                                    values[m - chunkStart] = bwIt->intervals->value[h];
+                                }
+                            } else if (sum_only) {
+                                values[m - chunkStart] += bwIt->intervals->value[h];
+                            } else {
+                                values[m - chunkStart] += bwIt->intervals->value[h] / (float) n_bw;
+                            }
+                        }
+                    }
+                    bwIt = bwIteratorNext(bwIt);
+                    if (bwIt == NULL) {
+                        fprintf(stderr, "[E::merge] Error traversing bigWig\n");
+                        return EXIT_FAILURE;
+                    }
+                }
+                bwIteratorDestroy(bwIt);
+                first = false;
             }
-            bwIteratorDestroy(bwIt);
-        }
-        ranges->times_added = 0;
-        for (uint32_t j = 0; j < bw_out->cl->len[i]; j++) {
-            values[j] += add;
-            values[j] *= mult;
-            if (do_log10) values[j] = log10f(values[j]);
-            if (use_trim) values[j] = min(trim, values[j]);
-            if (step != 0) values[j] = roundf(values[j] / step) * step;
-        }
-        for (uint32_t j = 0; j < bw_out->cl->len[i]; j++) {
-            if (ranges->n == ranges->m) {
-                addBwInterval(bw_out, ranges);
+            for (uint32_t j = 0; j < (chunkEnd - chunkStart); j++) {
+                values[j] += add;
+                values[j] *= mult;
+                if (do_log10) values[j] = log10f(values[j]);
+                if (use_trim) values[j] = min(trim, values[j]);
+                if (step != 0) values[j] = roundf(values[j] / step) * step;
             }
-            ranges->chrom[ranges->n] = bw_out->cl->chrom[i];
-            ranges->start[ranges->n] = j;
-            ranges->val[ranges->n] = values[j];
-            while (j + 1 < bw_out->cl->len[i] && values[j + 1] == values[j]) j++;
-            ranges->end[ranges->n++] = j + 1;
+            for (uint32_t j = 0; j < (chunkEnd - chunkStart); j++) {
+                if (ranges->n && ranges->end[ranges->n - 1] == (chunkStart + j) && ranges->val[ranges->n - 1] == values[j]) {
+                    ranges->end[ranges->n - 1] = chunkStart + j + 1;
+                } else {
+                    if (ranges->n == ranges->m) {
+                        addBwInterval(bw_out, ranges);
+                    }
+                    ranges->chrom[ranges->n] = bw_out->cl->chrom[i];
+                    ranges->start[ranges->n] = chunkStart + j;
+                    ranges->val[ranges->n] = values[j];
+                    while ((chunkStart + j + 1) < chunkEnd && values[j + 1] == values[j]) j++;
+                    ranges->end[ranges->n++] = chunkStart + j + 1;
+                }
+            }
         }
         if (ranges->n) {
             addBwInterval(bw_out, ranges);
         }
     }
     free(values);
-    /*  TODO: implement chunking (instead of alloc()'ing whole chromosome)
-    } else {
-        fprintf(stderr, "[E::merge] -c not yet implemented.\n");
-        return EXIT_FAILURE;
-    }
-    */
 
     for (int i = 0; i < n_bw; i++) {
         bwClose(bw_in[i]);
@@ -1954,6 +1976,7 @@ static int bg2bw(int argc, char **argv) {
 // main ------------------------------------------------------------------------
 
 static void help(void) {
+        /* "    compare    Perform an operation between values of two bigWigs\n" */
     printf(
         "bwtk v%s  Copyright (C) %s  Benjamin Jean-Marie Tremblay\n"
         "Usage:  bwtk <subcommand> [options]\n"
