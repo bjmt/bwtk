@@ -1336,7 +1336,7 @@ static void help_merge(void) {
 
 #define BW_MERGE_CHUNK_SIZE 1000000
 
-static int addConsensusChromsToCs(bigWigFile_t **bw_in, const int n_bw, chromSizes_t *cs) {
+static int addConsensusChroms(bigWigFile_t **bw_in, const int n_bw, chromSizes_t *cs) {
     khash_t(str_m) *conChroms = kh_init(str_m);
     khint64_t k;
     int absent;
@@ -1526,7 +1526,7 @@ static int merge(int argc, char **argv) {
         }
     }
     chromSizes_t *cs = alloc(sizeof(chromSizes_t));
-    if (addConsensusChromsToCs(bw_in, n_bw, cs)) {
+    if (addConsensusChroms(bw_in, n_bw, cs)) {
         return EXIT_FAILURE;
     }
     if (!bg) {
