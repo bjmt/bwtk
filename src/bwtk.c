@@ -29,7 +29,7 @@
 #include "kseq.h"
 #include "khash.h"
 
-#define BWTK_VERSION "1.5.3"
+#define BWTK_VERSION "1.6.0"
 #define BWTK_YEAR "2025"
 
 // common ----------------------------------------------------------------------
