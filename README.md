@@ -34,11 +34,17 @@ make release
 
 ### File transformations
 
-- `bg2bw`: one bedGraph -> [optional operation] -> one bigWig
-- `adjust`: one bigWig -> [optional operation] -> one bigWig (or bedGraph)
-- `merge`: Multiple bigWigs -> [merge values] -> [optional operation] -> one bigWig
+There are three subcommands relating to creating bigWigs:
+
+- `bg2bw`: one bedGraph -> [operation] -> one bigWig
+- `adjust`: one bigWig -> [subset] -> [operation] -> one bigWig
+- `merge`: Multiple bigWigs -> [merge] -> [operation] -> one bigWig
+
+The only differences between `adjust` and `merge` are that `adjust` works on a single input file and allows for subsetting the output, and `merge` works on more than one input file but has no subsetting option.
 
 ### Data extraction
+
+As well as three subcommands which create non-bigWig outputs:
 
 - `values`: Extract single base-resolution range scores
 - `score`: Calculate summary information of range scores
