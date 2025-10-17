@@ -29,7 +29,7 @@
 #include "kseq.h"
 #include "khash.h"
 
-#define BWTK_VERSION "1.6.0"
+#define BWTK_VERSION "1.6.1"
 #define BWTK_YEAR "2025"
 
 // common ----------------------------------------------------------------------
@@ -666,6 +666,10 @@ static int adjust(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     if (bedfn != NULL) {
+        if (rRange != NULL) {
+            fprintf(stderr, "[E::adjust] -b and -r cannot both be used\n");
+            return EXIT_FAILURE;
+        }
         bed = readBED(bedfn, false, 0, 0, 0);
         if (bed == NULL) return EXIT_FAILURE;
         bed_index(bed->data);
