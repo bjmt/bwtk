@@ -1,3 +1,4 @@
+[![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat)](http://bioconda.github.io/recipes/bwtk/README.html)
 # bwtk: A bigWig Toolkit
 
 bwtk is a program containing a set of utilities for handling [bigWig](https://genome.ucsc.edu/goldenpath/help/bigWig.html)

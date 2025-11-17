@@ -39,14 +39,14 @@ else
 	LDLIBS+=-lz
 endif
 
-debug: CFLAGS+=-g3 -Og -Wall -Wextra -Wdouble-promotion -Wno-sign-compare \
-	-fsanitize=address,undefined -fno-omit-frame-pointer -Wno-unused-function
-debug: LDFLAGS+=-g3 -Og
-debug: bwtk
-
 release: CFLAGS+=-O3
 release: LDFLAGS+=-O3
 release: bwtk
+
+debug: CFLAGS+=-g3 -Og -Wall -Wextra -Wdouble-promotion -Wno-sign-compare \
+	-fsanitize=address,undefined -fno-omit-frame-pointer -Wno-unused-function
+debug: LDFLAGS+=-g3 -Og -fsanitize=address,undefined
+debug: bwtk
 
 libz/libz.a:
 	(cd $(ZLIBDIR) && ./configure --prefix=./ --static)
