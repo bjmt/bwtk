@@ -23,7 +23,9 @@
 #include <string.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <locale.h>
 #include <math.h>
+#include <signal.h>
 #include "libBigWig/bigWig.h"
 #include "ksort.h"
 #include "kseq.h"
@@ -68,6 +70,15 @@ static void *calloc_or_die(size_t size, const char *func_name) {
   return result;
 }
 #define alloc(size) calloc_or_die((size), __func__)
+
+static bool parse_double(const char *s, double *out) {
+    char *end;
+    errno = 0;
+    double v = strtod(s, &end);
+    if (end == s || *end != '\0' || errno == ERANGE) return false;
+    *out = v;
+    return true;
+}
 
 #ifndef kroundup32
 #define kroundup32(x) (--(x), (x)|=(x)>>1, (x)|=(x)>>2, (x)|=(x)>>4, (x)|=(x)>>8, (x)|=(x)>>16, ++(x))
@@ -182,7 +193,7 @@ static bed_t *readBED(const char *fn, const bool constant_size, const uint32_t s
     int64_t name_index = 0;
     while ((ks_len = ks_getuntil(ks, KS_SEP_LINE, &str, &dret)) >= 0) {
         char *ref = str.s, *ref_end;
-        char strand;
+        char strand = '.';
         char name[BED_NAME_SIZE];
         uint32_t beg = 0, end = 0;
         int num = 0;
@@ -200,7 +211,7 @@ static bed_t *readBED(const char *fn, const bool constant_size, const uint32_t s
         while (*ref_end && !isspace(*ref_end)) ref_end++;
         if ('\0' != *ref_end) {
             *ref_end = '\0';
-            num = sscanf(ref_end + 1, "%"SCNu32" %"SCNu32" %s %*s %c",
+            num = sscanf(ref_end + 1, "%"SCNu32" %"SCNu32" %1023s %*s %c",
                          &beg, &end, name, &strand);
         }
         if (1 == num) {
@@ -298,7 +309,7 @@ static bed_t *readBED(const char *fn, const bool constant_size, const uint32_t s
         }
         if (num < 3 || strcmp(name, ".") == 0) {
             int sret = snprintf(name, BED_NAME_SIZE, "%s:%u-%u", ref, beg, end);
-            if (sret < 0 || sret > BED_NAME_SIZE) {
+            if (sret < 0 || sret >= BED_NAME_SIZE) {
                 fprintf(stderr,
                         "[E::readBED] Failed to store range name in \"%s\" at line %u\n",
                         fn, line);
@@ -454,6 +465,43 @@ static void addBgInterval(ranges_t *ranges, const bool tofile) {
     ranges->n = 0;
 }
 
+static void freeRanges(ranges_t *r) {
+    if (!r) return;
+    free(r->chrom);
+    free(r->start);
+    free(r->end);
+    free(r->val);
+    free(r);
+}
+
+static void freeChromSizes(chromSizes_t *cs) {
+    if (!cs) return;
+    for (int i = 0; i < cs->n; i++) free(cs->chroms[i]);
+    free(cs->chroms);
+    free(cs->sizes);
+    free(cs);
+}
+
+static void freeBED(bed_t *bed, const bool owns_names, const bool owns_keys) {
+    if (!bed) return;
+    if (owns_names) {
+        for (int i = 0; i < bed->n_names; i++) free(bed->names[i]);
+    }
+    free(bed->names);
+    if (bed->data) {
+        khint_t k;
+        for (k = kh_begin(bed->data); k != kh_end(bed->data); k++) {
+            if (kh_exist(bed->data, k)) {
+                if (owns_keys) free((char *) kh_key(bed->data, k));
+                free(kh_val(bed->data, k).a);
+                free(kh_val(bed->data, k).idx);
+            }
+        }
+        kh_destroy(bedHash, bed->data);
+    }
+    free(bed);
+}
+
 // Some more code adapted from HTSlib:
 
 static inline uint64_t pushDigit(uint64_t i, char c) {
@@ -513,47 +561,74 @@ static uint32_t parseDecimal(const char *str, char **strend) {
     }
 
     if (n >= 0xFFFFFFFF) {
-        fprintf(stderr, "[E::parseDecimal] Coordinate value exceeds uint32_t limit: %lld\n", n);
+        fprintf(stderr, "[E::parseDecimal] Coordinate value exceeds uint32_t limit: %" PRIu64 "\n", n);
+        return (uint32_t) -1;
     }
-    return (sign == '+')? n : -n;
+    return (sign == '+')? (uint32_t) n : (uint32_t) -n;
 }
 
 static uint32_t parseSingleRange(const char *s, const bigWigFile_t *bw, uint32_t *beg, uint32_t *end) {
     char *hyphen;
-    char *colon = strrchr(s, ':');
-    uint32_t tid = -1;
+    /* work on a copy so we don't mutate the caller's argv string */
+    char *buf = strdup(s);
+    if (!buf) {
+        fprintf(stderr, "[E::parseSingleRange] Out of memory\n");
+        return (uint32_t) -1;
+    }
+    char *colon = strrchr(buf, ':');
+    uint32_t tid = (uint32_t) -1;
     if (colon == NULL) {
-        tid = bwGetTid(bw, s);
-        if (tid == -1) {
+        tid = bwGetTid(bw, buf);
+        if (tid == (uint32_t) -1) {
             fprintf(stderr, "[E::parseSingleRange] Could not find sequence name in bigWig: '%s'\n", s);
-            return -1;
+            free(buf);
+            return (uint32_t) -1;
         }
         *beg = 0; *end = bw->cl->len[tid];
+        free(buf);
         return tid;
     }
-    *colon = 0;
-    tid = bwGetTid(bw, s);
-    if (tid == -1) {
+    *colon = '\0';
+    tid = bwGetTid(bw, buf);
+    if (tid == (uint32_t) -1) {
         fprintf(stderr, "[E::parseSingleRange] Could not find sequence name in bigWig: '%s'\n", s);
-        return -1;
+        free(buf);
+        return (uint32_t) -1;
     }
 
-    *beg = parseDecimal(colon+1, &hyphen) - 1;
-    if (*beg < 0) *beg = 0;
+    uint32_t raw_beg = parseDecimal(colon+1, &hyphen);
+    if (raw_beg == (uint32_t) -1) {
+        /* parseDecimal already printed an overflow error */
+        free(buf);
+        return (uint32_t) -1;
+    }
+    if (raw_beg == 0) {
+        fprintf(stderr, "[E::parseSingleRange] Range coordinates are 1-based; the minimum start is 1\n");
+        free(buf);
+        return (uint32_t) -1;
+    }
+    *beg = raw_beg - 1;
 
     if (*hyphen == '\0') {
         *end = *beg + 1;
     } else if (*hyphen == '-') {
         *end = parseDecimal(hyphen+1, NULL);
+        if (*end == (uint32_t) -1) {
+            free(buf);
+            return (uint32_t) -1;
+        }
     } else {
-        fprintf(stderr, "Unknown separator: '%c'\n", *hyphen);
-        return -1;
+        fprintf(stderr, "[E::parseSingleRange] Unknown separator: '%c'\n", *hyphen);
+        free(buf);
+        return (uint32_t) -1;
     }
 
     if (*beg >= *end) {
-        fprintf(stderr, "[E::parseSingleRange] Range start cannot be equal to or greater than end");
-        return -1;
+        fprintf(stderr, "[E::parseSingleRange] Range start cannot be equal to or greater than end\n");
+        free(buf);
+        return (uint32_t) -1;
     }
+    free(buf);
     return tid;
 }
 
@@ -596,41 +671,49 @@ static int adjust(int argc, char **argv) {
             case 'o':
                 outfn = optarg;
                 break;
-            case 'm':
-                mult = atof(optarg);
-                if (mult == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::adjust] Unable to parse '-m': %s\n", strerror(errno));
+            case 'm': {
+                double tmp;
+                if (!parse_double(optarg, &tmp)) {
+                    fprintf(stderr, "[E::adjust] Unable to parse '-m': %s\n", optarg);
                     return EXIT_FAILURE;
-                } else if (mult == 0) {
+                } else if (tmp == 0.0) {
                     fprintf(stderr, "[E::adjust] '-m' must be nonzero\n");
                     return EXIT_FAILURE;
                 }
+                mult = (float) tmp;
                 break;
-            case 'a':
-                add = atof(optarg);
-                if (add == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::adjust] Unable to parse '-a': %s\n", strerror(errno));
+            }
+            case 'a': {
+                double tmp;
+                if (!parse_double(optarg, &tmp)) {
+                    fprintf(stderr, "[E::adjust] Unable to parse '-a': %s\n", optarg);
                     return EXIT_FAILURE;
                 }
+                add = (float) tmp;
                 break;
+            }
             case 'l':
                 do_log10 = true;
                 break;
-            case 't':
+            case 't': {
+                double tmp;
+                if (!parse_double(optarg, &tmp)) {
+                    fprintf(stderr, "[E::adjust] Unable to parse '-t': %s\n", optarg);
+                    return EXIT_FAILURE;
+                }
                 use_trim = true;
-                trim = atof(optarg);
-                if (trim == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::adjust] Unable to parse '-t': %s\n", strerror(errno));
+                trim = (float) tmp;
+                break;
+            }
+            case 's': {
+                double tmp;
+                if (!parse_double(optarg, &tmp) || tmp < 0.0) {
+                    fprintf(stderr, "[E::adjust] Unable to parse '-s': %s\n", optarg);
                     return EXIT_FAILURE;
                 }
+                step = (float) tmp;
                 break;
-            case 's':
-                step = atof(optarg);
-                if (step == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::adjust] Unable to parse '-s': %s\n", strerror(errno));
-                    return EXIT_FAILURE;
-                }
-                break;
+            }
             case 'B':
                 bg = true;
                 break;
@@ -654,8 +737,7 @@ static int adjust(int argc, char **argv) {
             } else {
                 fout.gz = gzopen(outfn, "wb");
                 if (fout.gz == NULL) {
-                    int e;
-                    fprintf(stderr, "[E::adjust] Failed to open file '%s': %s\n", outfn, gzerror(fout.gz, &e));
+                    fprintf(stderr, "[E::adjust] Failed to open file '%s': %s\n", outfn, strerror(errno));
                     return EXIT_FAILURE;
                 }
             }
@@ -672,6 +754,10 @@ static int adjust(int argc, char **argv) {
     }
     if (bw_in == NULL) {
         fprintf(stderr, "[E::adjust] Missing -i\n");
+        return EXIT_FAILURE;
+    }
+    if (!bw_in->cl || !bw_in->cl->nKeys) {
+        fprintf(stderr, "[E::adjust] bigWig has no chromosomes\n");
         return EXIT_FAILURE;
     }
     if (bedfn != NULL) {
@@ -699,6 +785,7 @@ static int adjust(int argc, char **argv) {
                     return EXIT_FAILURE;
                 }
                 bedList_t *p = &kh_val(h, k);
+                memset(p, 0, sizeof(*p));
                 p->a = alloc(sizeof(p->a[0]));
                 p->a[0].namei = i;
                 p->a[0].beg = 0;
@@ -708,7 +795,7 @@ static int adjust(int argc, char **argv) {
         } else {
             uint32_t beg, end;
             uint32_t tid = parseSingleRange(rRange, bw_in, &beg, &end);
-            if (tid == -1) {
+            if (tid == (uint32_t) -1) {
                 return EXIT_FAILURE;
             }
             bed->n_names = 1;
@@ -720,6 +807,7 @@ static int adjust(int argc, char **argv) {
                 return EXIT_FAILURE;
             }
             bedList_t *p = &kh_val(h, k);
+            memset(p, 0, sizeof(*p));
             p->a = alloc(sizeof(p->a[0]));
             p->a[0].namei = tid;
             p->a[0].beg = beg;
@@ -829,6 +917,8 @@ static int adjust(int argc, char **argv) {
             return EXIT_FAILURE;
         }
     }
+    freeRanges(ranges);
+    freeBED(bed, bedfn != NULL, bedfn != NULL);
     bwClose(bw_in);
     bwCleanup();
     return EXIT_SUCCESS;
@@ -934,6 +1024,10 @@ static int score(int argc, char **argv) {
         fprintf(stderr, "[E::score] Missing -i\n");
         return EXIT_FAILURE;
     }
+    if (!bw->cl || !bw->cl->nKeys) {
+        fprintf(stderr, "[E::score] bigWig has no chromosomes\n");
+        return EXIT_FAILURE;
+    }
     if (bedfn != NULL) {
         bed = readBED(bedfn, false, 0, 0, 0);
         if (bed == NULL) return EXIT_FAILURE;
@@ -953,6 +1047,7 @@ static int score(int argc, char **argv) {
                 return EXIT_FAILURE;
             }
             bedList_t *p = &kh_val(h, k);
+            memset(p, 0, sizeof(*p));
             p->a = alloc(sizeof(p->a[0]));
             p->a[0].namei = i;
             p->a[0].beg = 0;
@@ -995,7 +1090,8 @@ static int score(int argc, char **argv) {
                     return EXIT_FAILURE;
                 }
                 first = true;
-                mean = mean0 = covered = sum = min_val = max_val = 0;
+                covered = sum = 0;
+                mean = mean0 = min_val = max_val = (double) NAN;
                 while (bwVals->data) {
                     for (int64_t h = 0; h < bwVals->intervals->l; h++) {
                         if (first) {
@@ -1061,6 +1157,7 @@ static int score(int argc, char **argv) {
         fprintf(stderr, "[E::score] Failed to close output stream: %s\n", strerror(errno));
         return EXIT_FAILURE;
     }
+    freeBED(bed, bedfn != NULL, bedfn != NULL);
     bwClose(bw);
     bwCleanup();
     return EXIT_SUCCESS;
@@ -1123,13 +1220,15 @@ static int values(int argc, char **argv) {
                     return EXIT_FAILURE;
                 }
                 break;
-            case 's':
-                size = atoi(optarg);
-                if (size <= 0) {
+            case 's': {
+                double tmp;
+                if (!parse_double(optarg, &tmp) || tmp <= 0.0 || tmp != (int) tmp) {
                     fprintf(stderr, "[E::values] -s must be a positive integer\n");
                     return EXIT_FAILURE;
                 }
+                size = (int) tmp;
                 break;
+            }
             case 'l':
                 left = true;
                 break;
@@ -1162,6 +1261,10 @@ static int values(int argc, char **argv) {
     }
     if (fout == NULL) {
         fprintf(stderr, "[E::values] Missing -o\n");
+        return EXIT_FAILURE;
+    }
+    if (!bw->cl || !bw->cl->nKeys) {
+        fprintf(stderr, "[E::values] bigWig has no chromosomes\n");
         return EXIT_FAILURE;
     }
 
@@ -1231,6 +1334,7 @@ static int values(int argc, char **argv) {
         fprintf(stderr, "[E::values] Failed to close output stream: %s\n", strerror(errno));
         return EXIT_FAILURE;
     }
+    freeBED(bed, true, true);
     bwClose(bw);
     bwCleanup();
     return EXIT_SUCCESS;
@@ -1283,7 +1387,6 @@ static int chromsizes(int argc, char **argv) {
                     return EXIT_FAILURE;
                 }
                 break;
-                break;
             case 'h':
                 help_chromsizes();
                 return EXIT_SUCCESS;
@@ -1299,7 +1402,7 @@ static int chromsizes(int argc, char **argv) {
         fprintf(stderr, "[E::chroms] Missing -o\n");
         return EXIT_FAILURE;
     }
-    if (!bw->cl->nKeys) {
+    if (!bw->cl || !bw->cl->nKeys) {
         fprintf(stderr, "[E::chroms] Zero chromosomes in bigWig\n");
         return EXIT_FAILURE;
     }
@@ -1323,6 +1426,7 @@ static void help_merge(void) {
         "    -S    Sum values instead of averaging\n"
         "    -M    Take the max value instead of averaging\n"
         "    -n    Take the min value instead of averaging\n"
+        "    -z    Treat positions absent from all inputs as 0 (default: skip them)\n"
         "    -a    Add this value to scores [0]\n"
         "    -m    Multiply scores by this value [1]\n"
         "    -l    log10-transform scores\n"
@@ -1409,10 +1513,11 @@ static int merge(int argc, char **argv) {
     int opt, n_bw;
     bigWigFile_t *bw_out = NULL;
     bigWigFile_t **bw_in = NULL;
-    float mult = 1.0f, add = 0.0f, step = 1.0f, trim;
+    float mult = 1.0f, add = 0.0f, step = 0.0f, trim = 0.0f;
     bool do_log10 = false, use_trim = false, tofile = true, bg = false;
-    bool sum_only = false, take_max = false, take_min = false;
-    while ((opt = getopt(argc, argv, "o:BSMa:m:lt:s:h")) != -1) {
+    bool sum_only = false, take_max = false, take_min = false, zero_pad = false;
+    bool bw_out_opened = false;
+    while ((opt = getopt(argc, argv, "o:BSMnza:m:lt:s:h")) != -1) {
         switch (opt) {
             case 'o':
                 outfn = optarg;
@@ -1429,41 +1534,52 @@ static int merge(int argc, char **argv) {
             case 'n':
                 take_min = true;
                 break;
-            case 'm':
-                mult = atof(optarg);
-                if (mult == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::merge] Unable to parse '-m': %s\n", strerror(errno));
+            case 'z':
+                zero_pad = true;
+                break;
+            case 'm': {
+                double tmp;
+                if (!parse_double(optarg, &tmp)) {
+                    fprintf(stderr, "[E::merge] Unable to parse '-m': %s\n", optarg);
                     return EXIT_FAILURE;
-                } else if (mult == 0) {
+                } else if (tmp == 0.0) {
                     fprintf(stderr, "[E::merge] '-m' must be nonzero\n");
                     return EXIT_FAILURE;
                 }
+                mult = (float) tmp;
                 break;
-            case 'a':
-                add = atof(optarg);
-                if (add == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::merge] Unable to parse '-a': %s\n", strerror(errno));
+            }
+            case 'a': {
+                double tmp;
+                if (!parse_double(optarg, &tmp)) {
+                    fprintf(stderr, "[E::merge] Unable to parse '-a': %s\n", optarg);
                     return EXIT_FAILURE;
                 }
+                add = (float) tmp;
                 break;
+            }
             case 'l':
                 do_log10 = true;
                 break;
-            case 't':
+            case 't': {
+                double tmp;
+                if (!parse_double(optarg, &tmp)) {
+                    fprintf(stderr, "[E::merge] Unable to parse '-t': %s\n", optarg);
+                    return EXIT_FAILURE;
+                }
                 use_trim = true;
-                trim = atof(optarg);
-                if (trim == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::merge] Unable to parse '-t': %s\n", strerror(errno));
+                trim = (float) tmp;
+                break;
+            }
+            case 's': {
+                double tmp;
+                if (!parse_double(optarg, &tmp) || tmp < 0.0) {
+                    fprintf(stderr, "[E::merge] Unable to parse '-s': %s\n", optarg);
                     return EXIT_FAILURE;
                 }
+                step = (float) tmp;
                 break;
-            case 's':
-                step = atof(optarg);
-                if (step == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::merge] Unable to parse '-s': %s\n", strerror(errno));
-                    return EXIT_FAILURE;
-                }
-                break;
+            }
             case 'h':
                 help_merge();
                 return EXIT_SUCCESS;
@@ -1472,7 +1588,7 @@ static int merge(int argc, char **argv) {
         }
     }
     if ((sum_only + take_max + take_min) > 1) {
-        fprintf(stderr, "[E::merge] Use only one of -s, -M and -n\n");
+        fprintf(stderr, "[E::merge] Use only one of -S, -M and -n\n");
         return EXIT_FAILURE;
     }
     if (outfn != NULL) {
@@ -1488,8 +1604,7 @@ static int merge(int argc, char **argv) {
             } else {
                 fout.gz = gzopen(outfn, "wb");
                 if (fout.gz == NULL) {
-                    int e;
-                    fprintf(stderr, "[E::merge] Failed to open file '%s': %s\n", outfn, gzerror(fout.gz, &e));
+                    fprintf(stderr, "[E::merge] Failed to open file '%s': %s\n", outfn, strerror(errno));
                     return EXIT_FAILURE;
                 }
             }
@@ -1499,6 +1614,7 @@ static int merge(int argc, char **argv) {
                 fprintf(stderr, "[E::merge] Unable to create output (-o) '%s'\n", outfn);
                 return EXIT_FAILURE;
             }
+            bw_out_opened = true;
         }
     } else {
         fprintf(stderr, "[E::merge] Missing -o\n");
@@ -1513,7 +1629,7 @@ static int merge(int argc, char **argv) {
         fprintf(stderr, "[E::merge] Expected at least two input bigWigs\n");
         return EXIT_FAILURE;
     }
-    bw_in = alloc(sizeof(bigWigFile_t) * n_bw);
+    bw_in = alloc(sizeof(*bw_in) * n_bw);
     for (int i = 0; i < n_bw; i++) {
         if (!bwIsBigWig(argv[optind + i], NULL)) {
             fprintf(stderr, "[E::merge] File is not a bigWig: '%s'\n", argv[optind + i]);
@@ -1559,56 +1675,71 @@ static int merge(int argc, char **argv) {
     }
     const uint32_t chunkSize = min(max_len, BW_MERGE_CHUNK_SIZE);
     float *values = alloc(sizeof(float) * chunkSize);
+    /* covered[i] = number of input files that had data at position chunkStart+i */
+    uint16_t *covered = alloc(sizeof(uint16_t) * chunkSize);
     uint32_t covBases = 0, chunkStart, chunkEnd;
     for (int i = 0; i < cs->n; i++) {
         ranges->times_added = ranges->n = 0;
         covBases = 0;
         while (covBases < cs->sizes[i]) {
             memset(values, 0, sizeof(float) * chunkSize);
+            memset(covered, 0, sizeof(uint16_t) * chunkSize);
             chunkStart = covBases;
             covBases = min(covBases + chunkSize, cs->sizes[i]);
             chunkEnd = covBases;
-            bool first = true;
             for (int j = 0; j < n_bw; j++) {
                 bwIt = bwOverlappingIntervalsIterator(bw_in[j], cs->chroms[i], chunkStart, chunkEnd, BW_ITERATOR_CHUNKS);
                 if (bwIt == NULL) {
                     fprintf(stderr, "[E::merge] Error traversing bigWig\n");
-                    return EXIT_FAILURE;
+                    goto merge_fail;
                 }
                 while (bwIt->data) {
                     for (int64_t h = 0; h < bwIt->intervals->l; h++) {
                         const uint32_t intStart = max(bwIt->intervals->start[h], chunkStart);
                         const uint32_t intEnd = min(bwIt->intervals->end[h], chunkEnd);
+                        const float v = bwIt->intervals->value[h];
                         for (uint32_t m = intStart; m < intEnd; m++) {
+                            const uint32_t ci = m - chunkStart;
                             if (take_max) {
-                                if (first) {
-                                    values[m - chunkStart] = bwIt->intervals->value[h];
+                                if (covered[ci] == 0) {
+                                    values[ci] = v;
                                 } else {
-                                    values[m - chunkStart] = max(values[m - chunkStart], bwIt->intervals->value[h]);
+                                    values[ci] = max(values[ci], v);
                                 }
                             } else if (take_min) {
-                                if (first) {
-                                    values[m - chunkStart] = min(values[m - chunkStart], bwIt->intervals->value[h]);
+                                if (covered[ci] == 0) {
+                                    values[ci] = v;
                                 } else {
-                                    values[m - chunkStart] = bwIt->intervals->value[h];
+                                    values[ci] = min(values[ci], v);
                                 }
                             } else if (sum_only) {
-                                values[m - chunkStart] += bwIt->intervals->value[h];
+                                values[ci] += v;
                             } else {
-                                values[m - chunkStart] += bwIt->intervals->value[h] / (float) n_bw;
+                                /* mean: accumulate sum; divide by covered count below */
+                                values[ci] += v;
                             }
+                            covered[ci]++;
                         }
                     }
                     bwIt = bwIteratorNext(bwIt);
                     if (bwIt == NULL) {
                         fprintf(stderr, "[E::merge] Error traversing bigWig\n");
-                        return EXIT_FAILURE;
+                        goto merge_fail;
                     }
                 }
                 bwIteratorDestroy(bwIt);
-                first = false;
             }
             for (uint32_t j = 0; j < (chunkEnd - chunkStart); j++) {
+                if (!zero_pad && covered[j] == 0) continue;
+                /* finish mean: divide accumulated sum by file count */
+                if (!take_max && !take_min && !sum_only) {
+                    values[j] /= zero_pad ? (float) n_bw : (float) covered[j];
+                }
+                /* zero_pad with min/max: uncovered inputs contribute 0 */
+                if (zero_pad && covered[j] < (uint16_t) n_bw) {
+                    if (take_min) values[j] = min(values[j], 0.0f);
+                    else if (take_max) values[j] = max(values[j], 0.0f);
+                }
                 values[j] += add;
                 values[j] *= mult;
                 if (do_log10) values[j] = log10f(values[j]);
@@ -1616,6 +1747,7 @@ static int merge(int argc, char **argv) {
                 if (step != 0) values[j] = roundf(values[j] / step) * step;
             }
             for (uint32_t j = 0; j < (chunkEnd - chunkStart); j++) {
+                if (!zero_pad && covered[j] == 0) continue;
                 if (ranges->n && ranges->end[ranges->n - 1] == (chunkStart + j) && ranges->val[ranges->n - 1] == values[j]) {
                     ranges->end[ranges->n - 1] = chunkStart + j + 1;
                 } else {
@@ -1629,7 +1761,8 @@ static int merge(int argc, char **argv) {
                     ranges->chrom[ranges->n] = cs->chroms[i];
                     ranges->start[ranges->n] = chunkStart + j;
                     ranges->val[ranges->n] = values[j];
-                    while ((chunkStart + j + 1) < chunkEnd && values[j + 1] == values[j]) j++;
+                    while ((chunkStart + j + 1) < chunkEnd && values[j + 1] == values[j]
+                           && (!zero_pad ? covered[j + 1] > 0 : true)) j++;
                     ranges->end[ranges->n++] = chunkStart + j + 1;
                 }
             }
@@ -1642,6 +1775,7 @@ static int merge(int argc, char **argv) {
             }
         }
     }
+    free(covered);
     free(values);
 
     if (!bg) {
@@ -1656,11 +1790,21 @@ static int merge(int argc, char **argv) {
             return EXIT_FAILURE;
         }
     }
+    freeRanges(ranges);
+    freeChromSizes(cs);
     for (int i = 0; i < n_bw; i++) {
         bwClose(bw_in[i]);
     }
+    free(bw_in);
     bwCleanup();
     return EXIT_SUCCESS;
+
+merge_fail:
+    if (bw_out_opened && outfn && strcmp(outfn, "-") != 0) {
+        bwClose(bw_out);
+        unlink(outfn);
+    }
+    return EXIT_FAILURE;
 
 }
 
@@ -1704,19 +1848,24 @@ static chromSizes_t *readChromSizes(gzFile cs) {
         if (*ref == 0 || *ref == '#') continue; // TODO: Maybe some sequences can start with #?
         char chr[CHROMNAME_SIZE];
         uint32_t size;
-        int num = sscanf(ref, "%s %"SCNu32, chr, &size);
+        int num = sscanf(ref, "%1023s %"SCNu32, chr, &size);
         if (num < 2) {
             fprintf(stderr, "[E::readChromSizes] Expected at least two columns in chrom.sizes (-g)\n");
             return (chromSizes_t *) NULL;
         }
         if (chromSizes->n + 1 > chromSizes->m) {
-            chromSizes->m *= 2;
-            chromSizes->chroms = realloc(chromSizes->chroms, sizeof(char *) * chromSizes->m);
-            chromSizes->sizes = realloc(chromSizes->sizes, sizeof(uint32_t) * chromSizes->m);
-            if (chromSizes->chroms == NULL || chromSizes->sizes == NULL) {
+            int new_m = chromSizes->m * 2;
+            char **tmp_chroms = realloc(chromSizes->chroms, sizeof(char *) * new_m);
+            uint32_t *tmp_sizes = realloc(chromSizes->sizes, sizeof(uint32_t) * new_m);
+            if (tmp_chroms == NULL || tmp_sizes == NULL) {
+                free(tmp_chroms);
+                free(tmp_sizes);
                 fprintf(stderr, "[E::readChromSizes] Out of memory\n");
                 return (chromSizes_t *) NULL;
             }
+            chromSizes->chroms = tmp_chroms;
+            chromSizes->sizes = tmp_sizes;
+            chromSizes->m = new_m;
         }
         chromSizes->chroms[chromSizes->n] = strdup(chr);
         chromSizes->sizes[chromSizes->n++] = size;
@@ -1765,7 +1914,7 @@ static int bg2bw(int argc, char **argv) {
     int opt;
     gzFile bg = NULL, cs = NULL;
     bigWigFile_t *bw = NULL;
-    char *preset = NULL;
+    char *preset = NULL, *out_path = NULL;
     bool ucsc = false;
     bool ignore_unknown_chr = false;
     bool do_log10 = false, use_trim = false;
@@ -1780,9 +1929,10 @@ static int bg2bw(int argc, char **argv) {
                 }
                 break;
             case 'o':
-                bw = bwOpen(optarg, NULL, "w");
+                out_path = optarg;
+                bw = bwOpen(out_path, NULL, "w");
                 if (!bw) {
-                    fprintf(stderr, "[E::bg2bw] Unable to create output (-o) '%s'\n", optarg);
+                    fprintf(stderr, "[E::bg2bw] Unable to create output (-o) '%s'\n", out_path);
                     return EXIT_FAILURE;
                 }
                 break;
@@ -1802,41 +1952,49 @@ static int bg2bw(int argc, char **argv) {
             case 'S':
                 ignore_unknown_chr = true;
                 break;
-            case 'm':
-                mult = atof(optarg);
-                if (mult == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::bg2bw] Unable to parse '-m': %s\n", strerror(errno));
+            case 'm': {
+                double tmp;
+                if (!parse_double(optarg, &tmp)) {
+                    fprintf(stderr, "[E::bg2bw] Unable to parse '-m': %s\n", optarg);
                     return EXIT_FAILURE;
-                } else if (mult == 0) {
+                } else if (tmp == 0.0) {
                     fprintf(stderr, "[E::bg2bw] '-m' must be nonzero\n");
                     return EXIT_FAILURE;
                 }
+                mult = (float) tmp;
                 break;
-            case 'a':
-                add = atof(optarg);
-                if (add == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::bg2bw] Unable to parse '-a': %s\n", strerror(errno));
+            }
+            case 'a': {
+                double tmp;
+                if (!parse_double(optarg, &tmp)) {
+                    fprintf(stderr, "[E::bg2bw] Unable to parse '-a': %s\n", optarg);
                     return EXIT_FAILURE;
                 }
+                add = (float) tmp;
                 break;
+            }
             case 'l':
                 do_log10 = true;
                 break;
-            case 't':
+            case 't': {
+                double tmp;
+                if (!parse_double(optarg, &tmp)) {
+                    fprintf(stderr, "[E::bg2bw] Unable to parse '-t': %s\n", optarg);
+                    return EXIT_FAILURE;
+                }
                 use_trim = true;
-                trim = atof(optarg);
-                if (trim == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::bg2bw] Unable to parse '-t': %s\n", strerror(errno));
+                trim = (float) tmp;
+                break;
+            }
+            case 's': {
+                double tmp;
+                if (!parse_double(optarg, &tmp) || tmp < 0.0) {
+                    fprintf(stderr, "[E::bg2bw] Unable to parse '-s': %s\n", optarg);
                     return EXIT_FAILURE;
                 }
+                step = (float) tmp;
                 break;
-            case 's':
-                step = atof(optarg);
-                if (step == 0 && errno == ERANGE) {
-                    fprintf(stderr, "[E::bg2bw] Unable to parse '-s': %s\n", strerror(errno));
-                    return EXIT_FAILURE;
-                }
-                break;
+            }
             case 'h':
                 help_bg2bw();
                 return EXIT_SUCCESS;
@@ -1879,16 +2037,16 @@ static int bg2bw(int argc, char **argv) {
 
     if (bwCreateHdr(bw, 10)) {  // Lowering this value doesn't lower mem usage in bwClose()
         fprintf(stderr, "[E::bg2bw] Failed to init bigWig header\n");
-        return EXIT_FAILURE;
+        goto bg2bw_fail;
     }
     bw->cl = bwCreateChromList((const char * const *) chromSizes->chroms, chromSizes->sizes, chromSizes->n);
     if (!bw->cl) {
         fprintf(stderr, "[E::bg2bw] Failed to create bigWig chrom list\n");
-        return EXIT_FAILURE;
+        goto bg2bw_fail;
     }
     if (bwWriteHdr(bw)) {
         fprintf(stderr, "[E::bg2bw] Failed to write bigWig header\n");
-        return EXIT_FAILURE;
+        goto bg2bw_fail;
     }
 
     khash_t(str_m) *bgChroms = kh_init(str_m);
@@ -1898,7 +2056,7 @@ static int bg2bw(int argc, char **argv) {
         k = kh_put(str_m, bgChroms, chromSizes->chroms[i], &absent);
         if (absent == -1) {
             fprintf(stderr, "[E::bg2bw] Failed to create bgChroms hash table\n");
-            return EXIT_FAILURE;
+            goto bg2bw_fail;
         }
         kh_val(bgChroms, k).x = -1;
         kh_val(bgChroms, k).y = (int64_t) chromSizes->sizes[i];
@@ -1920,16 +2078,16 @@ static int bg2bw(int argc, char **argv) {
         char chr[CHROMNAME_SIZE];
         uint32_t start, end;
         float val;
-        int num = sscanf(ref, "%s %"SCNu32" %"SCNu32" %f", chr, &start, &end, &val);
+        int num = sscanf(ref, "%1023s %"SCNu32" %"SCNu32" %f", chr, &start, &end, &val);
         if (num < 4) {
             fprintf(stderr, "[E::bg2bw] Error: Malformed bedGraph data on line %lld\n", frow);
-            return EXIT_FAILURE;
+            goto bg2bw_fail;
         }
         k = kh_get(str_m, bgChroms, chr);
         if (k == kh_end(bgChroms)) {
             if (!ignore_unknown_chr) {
                 fprintf(stderr, "[E::bg2bw] Found unknown chrom '%s' on line %lld\n", chr, frow);
-                return EXIT_FAILURE;
+                goto bg2bw_fail;
             } else {
                 continue;
             }
@@ -1942,23 +2100,23 @@ static int bg2bw(int argc, char **argv) {
         if (step != 0.0f) val = roundf(val / step) * step;
         if (kh_val(bgChroms, k).x != -1 && kh_val(bgChroms, k).x < (erow - 1)) {
             fprintf(stderr, "[E::bg2bw] bedGraph file must be sorted (found out of order chroms)\n");
-            return EXIT_FAILURE;
+            goto bg2bw_fail;
         }
         kh_val(bgChroms, k).x = erow;
-        if (end <= start || start < 0) {
+        if (end <= start) {
             fprintf(stderr, "[E::bg2bw] Bad bedGraph range on line %lld (start=%u end=%u)\n", frow, start, end);
-            return EXIT_FAILURE;
+            goto bg2bw_fail;
         }
         if (end > kh_val(bgChroms, k).y) {
             fprintf(stderr, "[E::bg2bw] bedGraph range extends beyond chromosome limit on line %lld\n", frow);
             fprintf(stderr, "[E::bg2bw] Range: %s:%u-%u\n", chr, start, end);
             fprintf(stderr, "[E::bg2bw] Chromosome size: %lld\n", kh_val(bgChroms, k).y);
-            return EXIT_FAILURE;
+            goto bg2bw_fail;
         }
         if (chrom_last == NULL || strcmp(chrom_last, chr) == 0) {
             if (end_last > 0 && start < end_last) {
                 fprintf(stderr, "[E::bg2bw] bedGraph must be sorted and/or not contain overlapping ranges (lines %lld-%lld)\n", frow - 1, frow);
-                return EXIT_FAILURE;
+                goto bg2bw_fail;
             }
             if (ranges->n && ranges->end[ranges->n - 1] == start && ranges->val[ranges->n - 1] == val) {
                 ranges->end[ranges->n - 1] = end;
@@ -2000,7 +2158,7 @@ static int bg2bw(int argc, char **argv) {
     }
     if (!bwdumps) {
         fprintf(stderr, "[E::bg2bw] Failed to find any ranges in bedGraph\n");
-        return EXIT_FAILURE;
+        goto bg2bw_fail;
     }
 
 #ifdef DEBUG
@@ -2015,7 +2173,15 @@ static int bg2bw(int argc, char **argv) {
     fprintf(stderr, "Peak mem after indexing: %'.2f MB\n", ((double) peak_mem() / 1024.0) / 1024.0);
 #endif
 
+    freeRanges(ranges);
+    freeChromSizes(chromSizes);
+    kh_destroy(str_m, bgChroms);
+
     return EXIT_SUCCESS;
+
+bg2bw_fail:
+    if (bw) { bwClose(bw); if (out_path) unlink(out_path); }
+    return EXIT_FAILURE;
 }
 
 // main ------------------------------------------------------------------------
@@ -2040,6 +2206,8 @@ static void help(void) {
 }
 
 int main(int argc, char **argv) {
+    setlocale(LC_ALL, "C");
+    signal(SIGPIPE, SIG_IGN);
 
     if (argc < 2) {
         fprintf(stderr, "[E::main] Missing subcommand, 'help' for usage\n");

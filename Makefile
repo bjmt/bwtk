@@ -71,6 +71,14 @@ clean/bwtk:
 bwtk: src/bwtk.o
 	$(CC) $(LDFLAGS) $(objects) -o $@ $(LDLIBS)
 
+.PHONY: test test-smoke
+
+test: bwtk
+	cd test && bash test_suite.sh
+
+test-smoke: bwtk
+	cd test && bash test.sh
+
 install: bwtk
 	install -p ./bwtk $(PREFIX)/$(BINDIR)
 

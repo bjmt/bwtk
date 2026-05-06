@@ -1,0 +1,157 @@
+UNRELEASED
+----------
+
+* Fixed a bug where `merge -n` (min) was silently unreachable in the
+  option parser due to a missing break, causing an EXIT_FAILURE.
+
+* Fixed `merge -n` producing wrong results: the accumulator was
+  initialised to zero (via memset) rather than the first input value,
+  so the minimum was always 0 or lower.
+
+* Fixed `merge` writing integer step sizes when the input bigWig has a
+  non-integer zoom step, causing silent value rounding (e.g., 1.25 → 1).
+
+* Fixed `merge` not applying zero-padding to min/max aggregation: with
+  `-z -n` or `-z -M`, positions covered by fewer inputs than the total
+  were not compared against 0, so the result could be wrong.
+
+* Fixed five numeric option arguments (`-t`, `-m`, `-a`, etc.) accepting
+  values like "1,5" or "1abc" silently on locales that use comma as the
+  decimal separator; they now call a locale-independent parser and reject
+  trailing garbage.
+
+* Fixed 1-based coordinate validation: ranges of the form `chr:0-N` are
+  now rejected with an explicit "1-based" error instead of silently
+  shifting by one.
+
+* Fixed integer overflow when parsing very large range endpoints; the
+  parser now detects overflow and exits with an error.
+
+* Fixed stack buffer overflows in BED, chrom.sizes, and bedGraph
+  parsers: chromosome name and BED name fields are now dynamically
+  allocated instead of written into fixed 256/4096-byte stack buffers.
+
+* Fixed `score` reporting NaN for uncovered positions within a known
+  chromosome instead of propagating the correct zero-covered sentinel.
+
+* Fixed `bwOpen` failures for gzip output paths (e.g., `-o out.bg.gz`)
+  not being detected before the write loop, causing a null-pointer
+  dereference.
+
+* Fixed `bg2bw` and `merge` leaving a partial output bigWig on disk when
+  they exit with an error mid-write; the file is now unlinked on failure.
+
+* Fixed `values` strand-aware padding placing extra bases on the wrong
+  side for minus-strand intervals that extend beyond the chromosome
+  boundary.
+
+* Added a comprehensive test suite (`test/test_suite.sh`): 66 named tests
+  covering regression, feature, and statistical correctness. Run with
+  `make test`. ASan-gated tests run with
+  `make debug && BWTK_DEBUG=1 bash test/test_suite.sh`.
+
+CHANGES IN VERSION 1.8.1 (2025-11-17)
+--------------------------------------
+
+* Fixed debug build compilation: corrected compiler flags in Makefile
+  that caused `make debug` to fail with newer clang versions.
+
+CHANGES IN VERSION 1.8.0 (2025-10-17)
+--------------------------------------
+
+* Added `-B` option to `merge` to output a bedGraph (`.bedGraph.gz`)
+  instead of a bigWig (use `-` for stdout).
+
+* Added `-z` option to `merge` to zero-pad coverage: positions not
+  covered by all input bigWigs are treated as 0 in the aggregation
+  rather than being excluded.
+
+CHANGES IN VERSION 1.7.0 (2025-10-17)
+--------------------------------------
+
+* Added `-n` option to `merge` to take the per-position minimum across
+  inputs instead of averaging.
+
+* Rewrote `merge` to process each chromosome in fixed-size chunks,
+  greatly reducing peak memory usage on large chromosomes.
+
+* Fixed `merge -M` (max) initialising the accumulator array with memset
+  to 0 rather than to the first input's values, causing the result to be
+  wrong whenever all inputs were negative.
+
+CHANGES IN VERSION 1.6.1 (2025-10-17)
+--------------------------------------
+
+* Fixed `merge` accepting mutually exclusive flags (`-s`, `-M`, `-n`)
+  without an error; the tool now exits with a clear message if more than
+  one aggregation mode is specified.
+
+CHANGES IN VERSION 1.6.0 (2025-10-17)
+--------------------------------------
+
+* Added `-B` option to `score` to write a BED-format output with the
+  chosen statistic in the score column (e.g., `-B sum`).
+
+* Added `-r` option to `adjust` to subset the output to a single
+  genomic range specified as `chrName:start-end` (1-based, inclusive).
+
+* Fixed `score` printing the TSV header unconditionally; the header is
+  now suppressed when writing to a non-file output path.
+
+CHANGES IN VERSION 1.5.0 (2025-10-16)
+--------------------------------------
+
+* Renamed the `subset` subcommand to `adjust`.
+
+* Added BED file stdin support: `-b -` now accepted by `adjust`,
+  `score`, and `values`.
+
+* Fixed `merge` applying value operations (add, multiply, log10, trim)
+  per output interval rather than per base, producing wrong results when
+  intervals were coalesced across inputs.
+
+* Improved `merge` output interval collapsing: adjacent intervals with
+  the same value are now merged into a single interval.
+
+CHANGES IN VERSION 1.4.0 (2025-10-13)
+--------------------------------------
+
+* Fixed a bug in `adjust -b` where the output bigWig was silently empty
+  when the BED file contained ranges on chromosomes not present in the
+  input bigWig.
+
+* Added `-B` option to `adjust` to output a bedGraph (`.bedGraph.gz`)
+  instead of a bigWig (use `-` for stdout).
+
+CHANGES IN VERSION 1.3.0 (2025-10-13)
+--------------------------------------
+
+* Added `-S` option to `bg2bw` to silently skip bedGraph rows whose
+  chromosome is not present in the provided chrom.sizes file; without
+  `-S`, an unknown chromosome is a fatal error.
+
+CHANGES IN VERSION 1.2.0 (2025-10-08)
+--------------------------------------
+
+* Added the `score` subcommand, which computes per-interval summary
+  statistics (sum, mean, mean over total length, min, max) for regions
+  provided in a BED file, or for full chromosomes if no BED is given.
+
+CHANGES IN VERSION 1.1.0 (2025-10-04)
+--------------------------------------
+
+* Added the `merge` subcommand, which combines two or more bigWigs by
+  computing per-position mean, sum, or max across the inputs.
+
+* Added `-t` (trim) option to `adjust` and `bg2bw` to cap values at a
+  specified maximum after other transformations are applied.
+
+CHANGES IN VERSION 1.0.0 (2025-09-28)
+--------------------------------------
+
+* Initial release. Includes `bg2bw` (bedGraph → bigWig conversion),
+  `adjust` (single-bigWig subsetting and value transformation), `values`
+  (per-base score matrix extraction for BED ranges), and `chroms`
+  (chromosome listing). Value operation pipeline: add → multiply →
+  log10 → trim → binning.
+
