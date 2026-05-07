@@ -1,5 +1,5 @@
-UNRELEASED
-----------
+CHANGES IN VERSION 1.8.2 (2026-05-07)
+--------------------------------------
 
 * Fixed a bug where `merge -n` (min) was silently unreachable in the
   option parser due to a missing break, causing an EXIT_FAILURE.

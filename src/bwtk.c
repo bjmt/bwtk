@@ -31,8 +31,8 @@
 #include "kseq.h"
 #include "khash.h"
 
-#define BWTK_VERSION "1.8.1"
-#define BWTK_YEAR "2025"
+#define BWTK_VERSION "1.8.2"
+#define BWTK_YEAR "2026"
 
 // common ----------------------------------------------------------------------
 
